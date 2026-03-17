@@ -1,0 +1,58 @@
+{
+  "title": "NATS Consumer Lag",
+  "uid": "nats-consumer-lag",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Events Consumed per Service",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(nats_consume_total[1m])) by (service, subject)",
+          "legendFormat": "{{service}} / {{subject}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Consumer Error Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(nats_consume_total{status=\"error\"}[1m])) by (service, subject)",
+          "legendFormat": "{{service}} / {{subject}} errors"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Event Consume Latency p95 (ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(nats_consume_duration_seconds_bucket[5m])) by (le, service)) * 1000",
+          "legendFormat": "{{service}} p95"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "DLQ Messages Forwarded",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(nats_publish_total{subject=~\"dlq\\..*\"})",
+          "legendFormat": "DLQ Messages"
+        }
+      ]
+    }
+  ]
+}

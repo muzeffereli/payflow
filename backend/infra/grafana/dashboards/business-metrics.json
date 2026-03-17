@@ -1,0 +1,114 @@
+{
+  "title": "Business Metrics",
+  "uid": "business-metrics",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Orders Created (total)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(nats_publish_total{subject=\"orders.created\"})",
+          "legendFormat": "Orders Created"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Payments Succeeded (total)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(nats_publish_total{subject=\"payments.succeeded\"})",
+          "legendFormat": "Payments Succeeded"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Payments Failed (total)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(nats_publish_total{subject=\"payments.failed\"})",
+          "legendFormat": "Payments Failed"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Refunds Processed (total)",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(nats_publish_total{subject=\"payments.refunded\"})",
+          "legendFormat": "Refunds"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Order Creation Rate (orders/min)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nats_publish_total{subject=\"orders.created\"}[5m]) * 60",
+          "legendFormat": "orders/min"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Payment Success/Failure Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nats_publish_total{subject=\"payments.succeeded\"}[5m]) * 60",
+          "legendFormat": "succeeded/min"
+        },
+        {
+          "expr": "rate(nats_publish_total{subject=\"payments.failed\"}[5m]) * 60",
+          "legendFormat": "failed/min"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Fraud Decisions",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nats_publish_total{subject=\"fraud.approved\"}[5m]) * 60",
+          "legendFormat": "approved/min"
+        },
+        {
+          "expr": "rate(nats_publish_total{subject=\"fraud.rejected\"}[5m]) * 60",
+          "legendFormat": "rejected/min"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Event Publish Latency p95 (ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(nats_publish_duration_seconds_bucket[5m])) by (le, service)) * 1000",
+          "legendFormat": "{{service}} p95"
+        }
+      ]
+    }
+  ]
+}

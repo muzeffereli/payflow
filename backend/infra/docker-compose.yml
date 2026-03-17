@@ -1,0 +1,539 @@
+x-service-build: &service-build
+  context: ../
+  dockerfile: Dockerfile
+
+x-common-env: &common-env
+  LOG_LEVEL: info
+  NATS_URL: nats://nats:4222
+  REDIS_ADDR: redis:6379
+  OTEL_ENDPOINT: jaeger:4317
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+
+  postgres:
+    profiles: [core]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: platform
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+  redis:
+    profiles: [core]
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging: *logging
+
+  nats:
+    profiles: [core]
+    image: nats:2.10-alpine
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "9222:9222"
+    volumes:
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+      - natsdata:/data/jetstream
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging: *logging
+
+  minio:
+    profiles: [core]
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  minio-init:
+    profiles: [core]
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb local/products --ignore-existing &&
+      mc anonymous set download local/products &&
+      echo 'MinIO bucket ready'
+      "
+    logging: *logging
+
+
+  db-migrate:
+    profiles: [core]
+    image: postgres:16-alpine
+    environment:
+      USE_LOCAL_PSQL: "1"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      POSTGRES_USER: postgres
+      DB_PASSWORD: postgres
+    volumes:
+      - ../migrations:/migrations:ro
+      - ../scripts/migrate.sh:/migrate.sh:ro
+    entrypoint: ["sh", "-c", "apk add --no-cache bash && bash /migrate.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+    logging: *logging
+
+
+  auth-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: auth-service
+    ports:
+      - "8086:8086"
+    environment:
+      <<: *common-env
+      PORT: "8086"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: auth
+      DB_SSLMODE: disable
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      JWT_ISSUER: payment-platform
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8086/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+  api-gateway:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *common-env
+      PORT: "8080"
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      JWT_ISSUER: payment-platform
+      AUTH_SERVICE_ADDR: http://auth-service:8086
+      ORDER_SERVICE_ADDR: http://order-service:8081
+      PAYMENT_SERVICE_ADDR: http://payment-service:8082
+      WALLET_SERVICE_ADDR: http://wallet-service:8083
+      PRODUCT_SERVICE_ADDR: http://product-service:8087
+      CART_SERVICE_ADDR: http://cart-service:8088
+      STORE_SERVICE_ADDR: http://store-service:8089
+      NOTIFICATION_SERVICE_ADDR: http://notification-service:8084
+      FRAUD_SERVICE_ADDR: http://fraud-service:8085
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  product-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: product-service
+    ports:
+      - "8087:8087"
+    environment:
+      <<: *common-env
+      PORT: "8087"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: products
+      DB_SSLMODE: disable
+      STORE_SERVICE_ADDR: http://store-service:8089
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: products
+      MINIO_USE_SSL: "false"
+      MINIO_PUBLIC_URL: http://localhost:9000
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8087/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+  order-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: order-service
+    ports:
+      - "8081:8081"
+    environment:
+      <<: *common-env
+      PORT: "8081"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: orders
+      DB_SSLMODE: disable
+      PRODUCT_SERVICE_ADDR: http://product-service:8087
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      product-service:
+        condition: service_started
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+  payment-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: payment-service
+    ports:
+      - "8082:8082"
+    environment:
+      <<: *common-env
+      PORT: "8082"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: payments
+      DB_SSLMODE: disable
+      STORE_SERVICE_ADDR: http://store-service:8089
+      WALLET_SERVICE_ADDR: http://wallet-service:8083
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8082/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      store-service:
+        condition: service_started
+    restart: unless-stopped
+    logging: *logging
+
+  wallet-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: wallet-service
+    ports:
+      - "8083:8083"
+    environment:
+      <<: *common-env
+      PORT: "8083"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: wallets
+      DB_SSLMODE: disable
+      PLATFORM_WALLET_USER_ID: ${PLATFORM_WALLET_USER_ID:-61091aca-1268-45b7-a067-5f2eef4e6dc9}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8083/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+  cart-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: cart-service
+    ports:
+      - "8088:8088"
+    environment:
+      <<: *common-env
+      PORT: "8088"
+      ORDER_SERVICE_ADDR: http://order-service:8081
+      PRODUCT_SERVICE_ADDR: http://product-service:8087
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8088/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  store-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: store-service
+    ports:
+      - "8089:8089"
+    environment:
+      <<: *common-env
+      PORT: "8089"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: stores
+      DB_SSLMODE: disable
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8089/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+  notification-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: notification-service
+    environment:
+      <<: *common-env
+      PORT: "8084"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: notifications
+      DB_SSLMODE: disable
+    depends_on:
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+  fraud-service:
+    profiles: [app]
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: fraud-service
+    ports:
+      - "8085:8085"
+    environment:
+      <<: *common-env
+      PORT: "8085"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: fraud
+      DB_SSLMODE: disable
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8085/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *logging
+
+
+  frontend:
+    profiles: [app]
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      API_GATEWAY_URL: http://api-gateway:8080
+    depends_on:
+      api-gateway:
+        condition: service_started
+    restart: unless-stopped
+    logging: *logging
+
+
+  jaeger:
+    profiles: [obs]
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC (services â†’ Jaeger)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    logging: *logging
+
+  prometheus:
+    profiles: [obs]
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1d"
+    logging: *logging
+
+  grafana:
+    profiles: [obs]
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    logging: *logging
+
+  nats-ui:
+    profiles: [obs]
+    image: ghcr.io/gastbob40/nats-ui:latest
+    ports:
+      - "31311:3000"
+    environment:
+      NATS_URL: nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
+    logging: *logging
+
+  nats-box:
+    profiles: [obs]
+    image: natsio/nats-box
+    depends_on:
+      nats:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    logging: *logging
+
+volumes:
+  pgdata:
+  redisdata:
+  natsdata:
+  promdata:
+  grafanadata:
+  jaegerdata:
+  miniodata:
