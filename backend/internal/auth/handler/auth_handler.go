@@ -11,6 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	accessTokenCookie  = "access_token"
+	refreshTokenCookie = "refresh_token"
+	accessTokenMaxAge  = 15 * 60      // 15 minutes
+	refreshTokenMaxAge = 7 * 24 * 3600 // 7 days
+)
+
 type AuthHandler struct {
 	svc *service.AuthService
 }
@@ -40,11 +47,11 @@ type LoginRequest struct {
 }
 
 type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required" example:"eyJhbGci..."`
+	RefreshToken string `json:"refresh_token" example:"eyJhbGci..."`
 }
 
 type LogoutRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required" example:"eyJhbGci..."`
+	RefreshToken string `json:"refresh_token" example:"eyJhbGci..."`
 }
 
 type ChangePasswordRequest struct {
@@ -90,6 +97,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	setAuthCookies(c, pair)
 	c.JSON(http.StatusCreated, toTokenPairResponse(pair))
 }
 
@@ -110,19 +118,26 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	setAuthCookies(c, pair)
 	c.JSON(http.StatusOK, toTokenPairResponse(pair))
 }
 
 func (h *AuthHandler) Refresh(c *gin.Context) {
-	var body RefreshRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	// Prefer cookie; fall back to JSON body for API clients.
+	refreshToken, _ := c.Cookie(refreshTokenCookie)
+	if refreshToken == "" {
+		var body RefreshRequest
+		if err := c.ShouldBindJSON(&body); err != nil || body.RefreshToken == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refresh token required"})
+			return
+		}
+		refreshToken = body.RefreshToken
 	}
 
-	pair, err := h.svc.Refresh(c.Request.Context(), body.RefreshToken)
+	pair, err := h.svc.Refresh(c.Request.Context(), refreshToken)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidRefreshToken) {
+			clearAuthCookies(c)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
 			return
 		}
@@ -130,21 +145,28 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
+	setAuthCookies(c, pair)
 	c.JSON(http.StatusOK, toTokenPairResponse(pair))
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
-	var body LogoutRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	// Prefer cookie; fall back to JSON body for API clients.
+	refreshToken, _ := c.Cookie(refreshTokenCookie)
+	if refreshToken == "" {
+		var body LogoutRequest
+		if err := c.ShouldBindJSON(&body); err != nil || body.RefreshToken == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refresh token required"})
+			return
+		}
+		refreshToken = body.RefreshToken
 	}
 
-	if err := h.svc.Logout(c.Request.Context(), body.RefreshToken); err != nil {
+	if err := h.svc.Logout(c.Request.Context(), refreshToken); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "logout failed"})
 		return
 	}
 
+	clearAuthCookies(c)
 	c.Status(http.StatusNoContent)
 }
 
@@ -268,6 +290,19 @@ func (h *AuthHandler) UpdateRole(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "role updated"})
+}
+
+// setAuthCookies writes httpOnly cookies for the access and refresh tokens.
+// Tokens are also included in the JSON body for API clients that cannot use cookies.
+func setAuthCookies(c *gin.Context, pair *service.TokenPair) {
+	c.SetCookie(accessTokenCookie, pair.AccessToken, accessTokenMaxAge, "/", "", false, true)
+	c.SetCookie(refreshTokenCookie, pair.RefreshToken, refreshTokenMaxAge, "/auth/refresh", "", false, true)
+}
+
+// clearAuthCookies expires both auth cookies immediately.
+func clearAuthCookies(c *gin.Context) {
+	c.SetCookie(accessTokenCookie, "", -1, "/", "", false, true)
+	c.SetCookie(refreshTokenCookie, "", -1, "/auth/refresh", "", false, true)
 }
 
 func toTokenPairResponse(pair *service.TokenPair) TokenPairResponse {

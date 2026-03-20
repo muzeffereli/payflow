@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import {
   LayoutDashboard, ShoppingBag, Package, Wallet,
   Store, CreditCard, LogOut, Bell,
-  ShieldCheck, ArrowDownToLine, X, Tags, ShieldAlert, Users, Gauge, UserCircle,
+  ShieldCheck, ArrowDownToLine, X, Tags, ShieldAlert, Users, Gauge, UserCircle, FolderTree,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuthStore, useIsAdmin, useIsSeller } from '../lib/store';
@@ -48,16 +48,14 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     { to: '/admin/dashboard', icon: <Gauge size={16} />, label: 'Dashboard' },
     { to: '/admin/users', icon: <Users size={16} />, label: 'Users' },
     { to: '/admin/stores', icon: <Store size={16} />, label: 'Stores' },
+    { to: '/admin/categories', icon: <FolderTree size={16} />, label: 'Categories' },
     { to: '/admin/attributes', icon: <Tags size={16} />, label: 'Attributes' },
     { to: '/admin/fraud', icon: <ShieldAlert size={16} />, label: 'Fraud Alerts' },
     { to: '/admin/withdrawals', icon: <ShieldCheck size={16} />, label: 'Withdrawals' },
   ];
 
   const handleLogout = async () => {
-    const refreshToken = useAuthStore.getState().refreshToken;
-    if (refreshToken) {
-      try { await authApi.logout(refreshToken); } catch { /* best-effort server invalidation */ }
-    }
+    try { await authApi.logout(); } catch { /* best-effort server invalidation */ }
     clearAuth();
     navigate('/login');
   };

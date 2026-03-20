@@ -25,6 +25,11 @@ type PaymentService struct {
 	workers   chan struct{}
 }
 
+var (
+	ErrNotFound     = errors.New("payment not found")
+	ErrUnauthorized = errors.New("user does not own this payment")
+)
+
 func New(repo port.PaymentRepository, pub port.EventPublisher, stores port.StoreClient, wallets port.WalletClient, log *slog.Logger) *PaymentService {
 	return &PaymentService{
 		repo:      repo,
@@ -53,7 +58,7 @@ func (s *PaymentService) HandleOrderCreated(ctx context.Context, data eventbus.O
 		data.OrderID,
 		data.UserID,
 		data.Currency,
-		normalizePaymentMethod(data.PaymentMethod),
+		eventbus.NormalizePaymentMethod(data.PaymentMethod),
 		data.TotalAmount,
 	)
 
@@ -103,9 +108,10 @@ func (s *PaymentService) HandleFraudApproved(ctx context.Context, data eventbus.
 
 	select {
 	case s.workers <- struct{}{}:
+		detached := context.WithoutCancel(ctx) // preserve trace, detach from request lifetime
 		go func() {
 			defer func() { <-s.workers }()
-			s.processPayment(context.Background(), payment)
+			s.processPayment(detached, payment)
 		}()
 	default:
 		s.log.Warn("worker pool full, processing inline", "payment_id", payment.ID)
@@ -199,7 +205,7 @@ func (s *PaymentService) processPayment(ctx context.Context, payment *domain.Pay
 }
 
 func (s *PaymentService) publishPaymentInitiated(ctx context.Context, p *domain.Payment, userID string) error {
-	data, _ := json.Marshal(eventbus.PaymentInitiatedData{
+	data, err := json.Marshal(eventbus.PaymentInitiatedData{
 		PaymentID: p.ID,
 		OrderID:   p.OrderID,
 		UserID:    userID,
@@ -207,6 +213,9 @@ func (s *PaymentService) publishPaymentInitiated(ctx context.Context, p *domain.
 		Currency:  p.Currency,
 		Method:    p.Method,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal payment.initiated: %w", err)
+	}
 	meta := eventbus.Metadata{CorrelationID: p.OrderID, UserID: userID}
 	event := eventbus.NewEvent("payment.initiated", p.ID, "payment", data, meta)
 	return s.publisher.Publish(ctx, eventbus.SubjectPaymentInitiated, event)
@@ -220,7 +229,7 @@ func (s *PaymentService) publishResult(ctx context.Context, p *domain.Payment) e
 
 	switch p.Status {
 	case domain.PaymentSucceeded:
-		data, _ := json.Marshal(eventbus.PaymentSucceededData{
+		data, err := json.Marshal(eventbus.PaymentSucceededData{
 			PaymentID:     p.ID,
 			OrderID:       p.OrderID,
 			UserID:        p.UserID,
@@ -232,15 +241,21 @@ func (s *PaymentService) publishResult(ctx context.Context, p *domain.Payment) e
 			StoreOwnerID:  p.StoreOwnerID,
 			Commission:    p.Commission,
 		})
+		if err != nil {
+			return fmt.Errorf("marshal payment.succeeded: %w", err)
+		}
 		event := eventbus.NewEvent("payment.succeeded", p.ID, "payment", data, meta)
 		return s.publisher.Publish(ctx, eventbus.SubjectPaymentSucceeded, event)
 
 	case domain.PaymentFailed:
-		data, _ := json.Marshal(eventbus.PaymentFailedData{
+		data, err := json.Marshal(eventbus.PaymentFailedData{
 			PaymentID: p.ID,
 			OrderID:   p.OrderID,
 			Reason:    p.FailureReason,
 		})
+		if err != nil {
+			return fmt.Errorf("marshal payment.failed: %w", err)
+		}
 		event := eventbus.NewEvent("payment.failed", p.ID, "payment", data, meta)
 		return s.publisher.Publish(ctx, eventbus.SubjectPaymentFailed, event)
 
@@ -287,7 +302,7 @@ func (s *PaymentService) RefundPayment(ctx context.Context, paymentID, userID st
 
 func (s *PaymentService) publishRefunded(ctx context.Context, p *domain.Payment) error {
 	refundID := uuid.New().String()
-	data, _ := json.Marshal(eventbus.PaymentRefundedData{
+	data, err := json.Marshal(eventbus.PaymentRefundedData{
 		PaymentID: p.ID,
 		RefundID:  refundID,
 		OrderID:   p.OrderID,
@@ -295,19 +310,11 @@ func (s *PaymentService) publishRefunded(ctx context.Context, p *domain.Payment)
 		Amount:    p.Amount,
 		Reason:    "requested",
 	})
+	if err != nil {
+		return fmt.Errorf("marshal payment.refunded: %w", err)
+	}
 	meta := eventbus.Metadata{CorrelationID: p.OrderID, UserID: p.UserID}
 	event := eventbus.NewEvent("payment.refunded", p.ID, "payment", data, meta)
 	return s.publisher.Publish(ctx, eventbus.SubjectPaymentRefunded, event)
 }
 
-var (
-	ErrNotFound     = errors.New("payment not found")
-	ErrUnauthorized = errors.New("user does not own this payment")
-)
-
-func normalizePaymentMethod(method string) string {
-	if method == "wallet" {
-		return "wallet"
-	}
-	return "card"
-}

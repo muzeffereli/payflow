@@ -16,11 +16,20 @@ type ProductRepository interface {
 }
 
 type ListFilter struct {
-	Category string
-	Status   string
-	StoreID  string // filter to a specific store's products
-	Limit    int
-	Offset   int
+	Category        string
+	CategoryID      string
+	SubcategoryID   string
+	Status          string
+	StoreID         string // filter to a specific store's products
+	Search          string
+	AttributeValues map[string][]string
+	Limit           int
+	Offset          int
+}
+
+type GlobalAttributeFilter struct {
+	SubcategoryID string
+	CategoryID    string // filter all subcategories under a category
 }
 
 type StoreClient interface {
@@ -42,9 +51,24 @@ type AttributeRepository interface {
 type GlobalAttributeRepository interface {
 	Create(ctx context.Context, a *domain.GlobalAttribute) error
 	GetByID(ctx context.Context, id string) (*domain.GlobalAttribute, error)
-	List(ctx context.Context) ([]*domain.GlobalAttribute, error)
+	List(ctx context.Context, filter GlobalAttributeFilter) ([]*domain.GlobalAttribute, error)
+	ListCategories(ctx context.Context) ([]string, error)
 	Update(ctx context.Context, a *domain.GlobalAttribute) error
 	Delete(ctx context.Context, id string) error
+}
+
+type CategoryRepository interface {
+	CreateCategory(ctx context.Context, category *domain.Category) error
+	GetCategoryByID(ctx context.Context, id string) (*domain.Category, error)
+	ListCategories(ctx context.Context) ([]*domain.Category, error)
+	UpdateCategory(ctx context.Context, category *domain.Category) error
+	DeleteCategory(ctx context.Context, id string) error
+
+	CreateSubcategory(ctx context.Context, subcategory *domain.Subcategory) error
+	GetSubcategoryByID(ctx context.Context, id string) (*domain.Subcategory, error)
+	ListSubcategories(ctx context.Context, categoryID string) ([]*domain.Subcategory, error)
+	UpdateSubcategory(ctx context.Context, subcategory *domain.Subcategory) error
+	DeleteSubcategory(ctx context.Context, id string) error
 }
 
 type ImageRepository interface {

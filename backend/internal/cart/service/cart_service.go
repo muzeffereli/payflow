@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 
 	"github.com/google/uuid"
 
 	"payment-platform/internal/cart/domain"
 	"payment-platform/internal/cart/port"
+	"payment-platform/pkg/catalog"
+	"payment-platform/pkg/eventbus"
 )
 
 type CartService struct {
@@ -55,7 +55,7 @@ func (s *CartService) AddItem(ctx context.Context, req AddItemRequest) (*domain.
 	if p.Status != "active" {
 		return nil, fmt.Errorf("%w: %s is %s", ErrInvalidProduct, req.ProductID, p.Status)
 	}
-	if len(p.Variants) > 0 && req.VariantID == nil {
+	if (len(p.Attributes) > 0 || len(p.Variants) > 0) && req.VariantID == nil {
 		return nil, fmt.Errorf("%w for product %s", ErrVariantRequired, req.ProductID)
 	}
 
@@ -168,18 +168,18 @@ func (s *CartService) GetCart(ctx context.Context, userID string) (*CartView, er
 	for _, item := range cart.Items {
 		p, ok := byID[item.ProductID]
 		if !ok {
-			continue // product may have been deleted â€” skip silently
+			continue // product may have been deleted — skip silently
 		}
 		unitPrice := p.Price
 		variantLabel := ""
 		variantSKU := ""
 		if item.VariantID != nil {
-			variant, found := findVariant(p, item.VariantID)
+			variant, found := catalog.FindVariant(p, item.VariantID)
 			if !found {
 				continue
 			}
-			unitPrice = effectiveVariantPrice(p, variant)
-			variantLabel = formatVariantLabel(variant.AttributeValues)
+			unitPrice = catalog.EffectivePrice(p, variant)
+			variantLabel = catalog.FormatVariantLabel(variant.AttributeValues)
 			variantSKU = variant.SKU
 		}
 		lineTotal := unitPrice * int64(item.Quantity)
@@ -233,8 +233,8 @@ func (s *CartService) Checkout(ctx context.Context, req CheckoutRequest) (*Check
 		byID[p.ID] = p
 	}
 
-	groups := make(map[string][]port.OrderItemInput) // storeKey â†’ items
-	storeIDByKey := make(map[string]*string)         // storeKey â†’ *string store ID
+	groups := make(map[string][]port.OrderItemInput) // storeKey → items
+	storeIDByKey := make(map[string]*string)         // storeKey → *string store ID
 
 	for _, item := range cart.Items {
 		p, ok := byID[item.ProductID]
@@ -274,7 +274,7 @@ func (s *CartService) Checkout(ctx context.Context, req CheckoutRequest) (*Check
 		orderID, err := s.orders.CreateOrder(ctx, port.CreateOrderRequest{
 			UserID:         req.UserID,
 			Currency:       req.Currency,
-			PaymentMethod:  normalizeCheckoutPaymentMethod(req.PaymentMethod),
+			PaymentMethod:  eventbus.NormalizePaymentMethod(req.PaymentMethod),
 			IdempotencyKey: idemKey,
 			Items:          items,
 			StoreID:        storeIDByKey[storeKey],
@@ -294,16 +294,19 @@ func (s *CartService) Checkout(ctx context.Context, req CheckoutRequest) (*Check
 }
 
 func validateCatalogSelection(product port.ProductInfo, variantID *string, qty int) error {
-	if len(product.Variants) > 0 && variantID == nil {
+	if (len(product.Attributes) > 0 || len(product.Variants) > 0) && variantID == nil {
 		return fmt.Errorf("%w for product %s", ErrVariantRequired, product.ID)
 	}
 	if variantID != nil {
-		variant, ok := findVariant(product, variantID)
+		variant, ok := catalog.FindVariant(product, variantID)
 		if !ok {
 			return fmt.Errorf("%w: variant %s not found for product %s", ErrInvalidProduct, *variantID, product.ID)
 		}
 		if variant.Status != "active" {
 			return fmt.Errorf("%w: variant %s is %s", ErrInvalidProduct, variant.ID, variant.Status)
+		}
+		if !catalog.VariantMatchesAttributes(product, variant) {
+			return fmt.Errorf("%w: variant %s no longer matches the current product attributes", ErrInvalidProduct, variant.ID)
 		}
 		if variant.Stock < qty {
 			return fmt.Errorf("%w: variant %s has %d in stock, need %d",
@@ -317,25 +320,6 @@ func validateCatalogSelection(product port.ProductInfo, variantID *string, qty i
 			ErrInsufficientStock, product.ID, product.Stock, qty)
 	}
 	return nil
-}
-
-func findVariant(product port.ProductInfo, variantID *string) (port.VariantInfo, bool) {
-	if variantID == nil {
-		return port.VariantInfo{}, false
-	}
-	for _, variant := range product.Variants {
-		if variant.ID == *variantID {
-			return variant, true
-		}
-	}
-	return port.VariantInfo{}, false
-}
-
-func effectiveVariantPrice(product port.ProductInfo, variant port.VariantInfo) int64 {
-	if variant.Price != nil {
-		return *variant.Price
-	}
-	return product.Price
 }
 
 func sameVariantID(a, b *string) bool {
@@ -360,28 +344,4 @@ func uniqueProductIDs(items []domain.CartItem) []string {
 		ids = append(ids, item.ProductID)
 	}
 	return ids
-}
-
-func formatVariantLabel(values map[string]string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, fmt.Sprintf("%s: %s", key, values[key]))
-	}
-	return strings.Join(parts, " / ")
-}
-
-func normalizeCheckoutPaymentMethod(method string) string {
-	if method == "wallet" {
-		return "wallet"
-	}
-	return "card"
 }

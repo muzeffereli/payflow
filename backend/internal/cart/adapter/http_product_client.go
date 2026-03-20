@@ -30,14 +30,20 @@ type listProductsResponse struct {
 }
 
 type productInfoResponse struct {
-	ID       string            `json:"id"`
-	Name     string            `json:"name"`
-	Price    int64             `json:"price"`
-	Currency string            `json:"currency"`
-	Stock    int               `json:"stock"`
-	Status   string            `json:"status"`
-	StoreID  *string           `json:"store_id,omitempty"`
-	Variants []variantResponse `json:"variants,omitempty"`
+	ID         string              `json:"id"`
+	Name       string              `json:"name"`
+	Price      int64               `json:"price"`
+	Currency   string              `json:"currency"`
+	Stock      int                 `json:"stock"`
+	Status     string              `json:"status"`
+	StoreID    *string             `json:"store_id,omitempty"`
+	Attributes []attributeResponse `json:"attributes,omitempty"`
+	Variants   []variantResponse   `json:"variants,omitempty"`
+}
+
+type attributeResponse struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
 }
 
 type variantResponse struct {
@@ -85,15 +91,20 @@ func (c *httpProductClient) GetProducts(ctx context.Context, ids []string) ([]po
 				AttributeValues: variant.AttributeValues,
 			}
 		}
+		attributes := make([]port.AttributeInfo, len(p.Attributes))
+		for j, attribute := range p.Attributes {
+			attributes[j] = port.AttributeInfo{Name: attribute.Name, Values: attribute.Values}
+		}
 		out[i] = port.ProductInfo{
-			ID:       p.ID,
-			Name:     p.Name,
-			Price:    p.Price,
-			Currency: p.Currency,
-			Stock:    p.Stock,
-			Status:   p.Status,
-			StoreID:  p.StoreID,
-			Variants: variants,
+			ID:         p.ID,
+			Name:       p.Name,
+			Price:      p.Price,
+			Currency:   p.Currency,
+			Stock:      p.Stock,
+			Status:     p.Status,
+			StoreID:    p.StoreID,
+			Attributes: attributes,
+			Variants:   variants,
 		}
 	}
 	return out, nil

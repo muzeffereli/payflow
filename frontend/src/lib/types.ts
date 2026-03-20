@@ -77,6 +77,7 @@ export type ProductStatus = 'active' | 'inactive' | 'out_of_stock';
 export interface ProductAttribute {
   id: string;
   product_id: string;
+  global_attribute_id?: string;
   name: string;
   values: string[];
   position: number;
@@ -113,7 +114,10 @@ export interface Product {
   currency: string;
   stock: number;
   status: ProductStatus;
+  category_id: string;
   category: string;
+  subcategory_id?: string;
+  subcategory?: string;
   image_url?: string;    // first image (thumbnail) â€” kept for backward compat
   images?: ProductImage[]; // full gallery
   attributes?: ProductAttribute[];
@@ -124,11 +128,57 @@ export interface Product {
 
 export interface GlobalAttribute {
   id: string;
+  subcategory_id: string;
+  subcategory: string;
+  category_id: string;  // parent category, read via JOIN
+  category: string;     // parent category name, read via JOIN
   name: string;
   values: string[];
   position: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Subcategory {
+  id: string;
+  category_id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FacetValue {
+  value: string;
+  count: number;
+}
+
+export interface AttributeFacet {
+  name: string;
+  values: FacetValue[];
+}
+
+export interface CategoryFacet {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface ProductListResponse {
+  products: Product[];
+  total: number;
+  limit: number;
+  offset: number;
+  categories?: CategoryFacet[];
+  facets?: AttributeFacet[];
 }
 
 export type StoreStatus = 'pending' | 'active' | 'suspended';

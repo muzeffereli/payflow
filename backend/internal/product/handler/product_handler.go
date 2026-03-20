@@ -20,26 +20,30 @@ type AttributeInput struct {
 }
 
 type CreateProductRequest struct {
-	Name        string           `json:"name"        binding:"required" example:"Wireless Headphones"`
-	Description string           `json:"description"                    example:"Noise-cancelling over-ear headphones"`
-	SKU         string           `json:"sku"         binding:"required" example:"HDPH-001"`
-	Price       int64            `json:"price"       binding:"required" example:"9999"` // cents
-	Currency    string           `json:"currency"                       example:"USD"`
-	Category    string           `json:"category"                       example:"electronics"`
-	Stock       int              `json:"stock"       binding:"min=0"    example:"100"`
-	StoreID     *string          `json:"store_id,omitempty"             example:"store-uuid"`
-	Images      []string         `json:"images,omitempty"               example:"[\"http://minio:9000/products/img.jpg\"]"`
-	Attributes  []AttributeInput `json:"attributes,omitempty"`
+	Name          string           `json:"name"        binding:"required" example:"Wireless Headphones"`
+	Description   string           `json:"description"                    example:"Noise-cancelling over-ear headphones"`
+	SKU           string           `json:"sku"         binding:"required" example:"HDPH-001"`
+	Price         int64            `json:"price"       binding:"required" example:"9999"` // cents
+	Currency      string           `json:"currency"                       example:"USD"`
+	CategoryID    string           `json:"category_id"                    example:"category-uuid"`
+	Category      string           `json:"category"                       example:"electronics"`
+	SubcategoryID *string          `json:"subcategory_id,omitempty"       example:"subcategory-uuid"`
+	Stock         int              `json:"stock"       binding:"min=0"    example:"100"`
+	StoreID       *string          `json:"store_id,omitempty"             example:"store-uuid"`
+	Images        []string         `json:"images,omitempty"               example:"[\"http://minio:9000/products/img.jpg\"]"`
+	Attributes    []AttributeInput `json:"attributes,omitempty"`
 }
 
 type UpdateProductRequest struct {
-	Name        *string          `json:"name"        example:"Wireless Headphones Pro"`
-	Description *string          `json:"description" example:"Updated description"`
-	Price       *int64           `json:"price"       example:"11999"`
-	Stock       *int             `json:"stock"       example:"200"`
-	Category    *string          `json:"category"    example:"electronics"`
-	Images      []string         `json:"images,omitempty"` // nil = no change; [] = clear; [...] = replace
-	Attributes  []AttributeInput `json:"attributes,omitempty"`
+	Name          *string          `json:"name"        example:"Wireless Headphones Pro"`
+	Description   *string          `json:"description" example:"Updated description"`
+	Price         *int64           `json:"price"       example:"11999"`
+	Stock         *int             `json:"stock"       example:"200"`
+	CategoryID    *string          `json:"category_id" example:"category-uuid"`
+	Category      *string          `json:"category"    example:"electronics"`
+	SubcategoryID *string          `json:"subcategory_id,omitempty" example:"subcategory-uuid"`
+	Images        []string         `json:"images,omitempty"` // nil = no change; [] = clear; [...] = replace
+	Attributes    []AttributeInput `json:"attributes,omitempty"`
 }
 
 type CreateVariantRequest struct {
@@ -57,10 +61,28 @@ type UpdateVariantRequest struct {
 }
 
 type ListProductsResponse struct {
-	Products []*domain.Product `json:"products"`
-	Total    int               `json:"total"  example:"42"`
-	Limit    int               `json:"limit"  example:"20"`
-	Offset   int               `json:"offset" example:"0"`
+	Products   []*domain.Product        `json:"products"`
+	Total      int                      `json:"total"  example:"42"`
+	Limit      int                      `json:"limit"  example:"20"`
+	Offset     int                      `json:"offset" example:"0"`
+	Categories []CategoryFacetResponse  `json:"categories,omitempty"`
+	Facets     []AttributeFacetResponse `json:"facets,omitempty"`
+}
+
+type CategoryFacetResponse struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type AttributeFacetResponse struct {
+	Name   string               `json:"name"`
+	Values []FacetValueResponse `json:"values"`
+}
+
+type FacetValueResponse struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
 }
 
 type ProductErrorResponse struct {
@@ -105,18 +127,20 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	}
 
 	p, err := h.svc.Create(c.Request.Context(), service.CreateRequest{
-		Name:        body.Name,
-		Description: body.Description,
-		SKU:         body.SKU,
-		Price:       body.Price,
-		Currency:    body.Currency,
-		Category:    body.Category,
-		Stock:       body.Stock,
-		StoreID:     body.StoreID,
-		Images:      body.Images,
-		Attributes:  attrs,
-		CallerID:    c.GetString("user_id"),
-		CallerRole:  c.GetString("user_role"),
+		Name:          body.Name,
+		Description:   body.Description,
+		SKU:           body.SKU,
+		Price:         body.Price,
+		Currency:      body.Currency,
+		CategoryID:    body.CategoryID,
+		Category:      body.Category,
+		SubcategoryID: body.SubcategoryID,
+		Stock:         body.Stock,
+		StoreID:       body.StoreID,
+		Images:        body.Images,
+		Attributes:    attrs,
+		CallerID:      c.GetString("user_id"),
+		CallerRole:    c.GetString("user_role"),
 	})
 	if err != nil {
 		switch {
@@ -146,13 +170,18 @@ func (h *ProductHandler) ListProducts(c *gin.Context) {
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	attributeValues := parseAttributeFilters(c)
 
-	products, total, err := h.svc.List(c.Request.Context(), port.ListFilter{
-		Category: c.Query("category"),
-		Status:   c.Query("status"),
-		StoreID:  c.Query("store_id"),
-		Limit:    limit,
-		Offset:   offset,
+	result, err := h.svc.List(c.Request.Context(), port.ListFilter{
+		Category:        c.Query("category"),
+		CategoryID:      c.Query("category_id"),
+		SubcategoryID:   c.Query("subcategory_id"),
+		Status:          c.Query("status"),
+		StoreID:         c.Query("store_id"),
+		Search:          c.Query("search"),
+		AttributeValues: attributeValues,
+		Limit:           limit,
+		Offset:          offset,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list products"})
@@ -160,10 +189,12 @@ func (h *ProductHandler) ListProducts(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ListProductsResponse{
-		Products: products,
-		Total:    total,
-		Limit:    limit,
-		Offset:   offset,
+		Products:   result.Products,
+		Total:      result.Total,
+		Limit:      limit,
+		Offset:     offset,
+		Categories: toCategoryFacetResponses(result.Categories),
+		Facets:     toAttributeFacetResponses(result.Facets),
 	})
 }
 
@@ -202,15 +233,17 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 	}
 
 	p, err := h.svc.Update(c.Request.Context(), c.Param("id"), service.UpdateRequest{
-		Name:        body.Name,
-		Description: body.Description,
-		Price:       body.Price,
-		Stock:       body.Stock,
-		Category:    body.Category,
-		Images:      images,
-		Attributes:  svcAttrs,
-		CallerID:    c.GetString("user_id"),
-		CallerRole:  c.GetString("user_role"),
+		Name:          body.Name,
+		Description:   body.Description,
+		Price:         body.Price,
+		Stock:         body.Stock,
+		CategoryID:    body.CategoryID,
+		Category:      body.Category,
+		SubcategoryID: body.SubcategoryID,
+		Images:        images,
+		Attributes:    svcAttrs,
+		CallerID:      c.GetString("user_id"),
+		CallerRole:    c.GetString("user_role"),
 	})
 	if err != nil {
 		switch {
@@ -325,4 +358,62 @@ func (h *ProductHandler) DeleteVariant(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func parseAttributeFilters(c *gin.Context) map[string][]string {
+	filters := make(map[string][]string)
+	for key, values := range c.Request.URL.Query() {
+		if !strings.HasPrefix(key, "attr.") {
+			continue
+		}
+		attributeName := strings.TrimSpace(strings.TrimPrefix(key, "attr."))
+		if attributeName == "" {
+			continue
+		}
+		parsedValues := make([]string, 0, len(values))
+		for _, raw := range values {
+			for _, item := range strings.Split(raw, ",") {
+				value := strings.TrimSpace(item)
+				if value == "" {
+					continue
+				}
+				parsedValues = append(parsedValues, value)
+			}
+		}
+		if len(parsedValues) == 0 {
+			continue
+		}
+		filters[attributeName] = parsedValues
+	}
+	return filters
+}
+
+func toCategoryFacetResponses(facets []service.CategoryFacet) []CategoryFacetResponse {
+	out := make([]CategoryFacetResponse, 0, len(facets))
+	for _, facet := range facets {
+		out = append(out, CategoryFacetResponse{
+			ID:    facet.ID,
+			Name:  facet.Name,
+			Count: facet.Count,
+		})
+	}
+	return out
+}
+
+func toAttributeFacetResponses(facets []service.AttributeFacet) []AttributeFacetResponse {
+	out := make([]AttributeFacetResponse, 0, len(facets))
+	for _, facet := range facets {
+		values := make([]FacetValueResponse, 0, len(facet.Values))
+		for _, value := range facet.Values {
+			values = append(values, FacetValueResponse{
+				Value: value.Value,
+				Count: value.Count,
+			})
+		}
+		out = append(out, AttributeFacetResponse{
+			Name:   facet.Name,
+			Values: values,
+		})
+	}
+	return out
 }

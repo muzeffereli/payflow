@@ -72,14 +72,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	storeAddr := envOrDefault("STORE_SERVICE_ADDR", "http://localhost:8089")
+	storeAddr := cfg.Services.StoreAddr
 
-	minioEndpoint := envOrDefault("MINIO_ENDPOINT", "localhost:9000")
-	minioAccess := envOrDefault("MINIO_ACCESS_KEY", "minioadmin")
-	minioSecret := envOrDefault("MINIO_SECRET_KEY", "minioadmin")
-	minioBucket := envOrDefault("MINIO_BUCKET", "products")
-	minioPublicURL := envOrDefault("MINIO_PUBLIC_URL", "http://localhost:9000")
-	minioUseSSL := envOrDefault("MINIO_USE_SSL", "false") == "true"
+	minioEndpoint := cfg.MinIO.Endpoint
+	minioAccess := cfg.MinIO.AccessKey
+	minioSecret := cfg.MinIO.SecretKey
+	minioBucket := cfg.MinIO.Bucket
+	minioPublicURL := cfg.MinIO.PublicURL
+	minioUseSSL := cfg.MinIO.UseSSL
 
 	minioClient, err := miniogo.New(minioEndpoint, &miniogo.Options{
 		Creds:  miniocreds.NewStaticV4(minioAccess, minioSecret, ""),
@@ -97,10 +97,11 @@ func main() {
 	attrRepo := adapter.NewPostgresAttributeRepo(db)
 	variantRepo := adapter.NewPostgresVariantRepo(db)
 	globalAttrRepo := adapter.NewPostgresGlobalAttributeRepo(db)
+	categoryRepo := adapter.NewPostgresCategoryRepo(db)
 	imageRepo := adapter.NewPostgresImageRepo(db)
 	pub := adapter.NewNATSPublisher(natsPublisher)
 	storeClient := adapter.NewHTTPStoreClient(storeAddr)
-	svc := service.New(repo, reservationRepo, attrRepo, variantRepo, imageRepo, pub, storeClient, log)
+	svc := service.New(repo, reservationRepo, attrRepo, variantRepo, globalAttrRepo, categoryRepo, imageRepo, pub, storeClient, log)
 
 	sub, err := eventbus.NewSubscriber(nc, log)
 	if err != nil {
@@ -201,10 +202,16 @@ func main() {
 	v1 := router.Group("/api/v1")
 	producthandler.New(svc).RegisterRoutes(v1)
 
-	attrHandler := producthandler.NewAttributeHandler(globalAttrRepo)
+	attrHandler := producthandler.NewAttributeHandler(globalAttrRepo, categoryRepo)
 	adminAttrs := v1.Group("/admin/attributes", middleware.RequireRole("admin"))
 	publicAttrs := v1.Group("/attributes")
 	attrHandler.RegisterRoutes(adminAttrs, publicAttrs)
+
+	categoryHandler := producthandler.NewCategoryHandler(categoryRepo)
+	adminCategories := v1.Group("/admin/categories", middleware.RequireRole("admin"))
+	publicCategories := v1.Group("/categories")
+	adminSubcategories := v1.Group("/admin/subcategories", middleware.RequireRole("admin"))
+	categoryHandler.RegisterRoutes(adminCategories, publicCategories, adminSubcategories)
 
 	if minioClient != nil {
 		uploadHandler := producthandler.NewUploadHandler(minioClient, minioBucket, minioPublicURL)
@@ -239,13 +246,9 @@ func main() {
 
 	shutdownCtx, done := context.WithTimeout(context.Background(), 15*time.Second)
 	defer done()
-	srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Error("forced shutdown", "err", err)
+	}
 	log.Info("product service stopped")
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}

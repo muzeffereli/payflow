@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 
 	"payment-platform/internal/order/domain"
 	"payment-platform/internal/order/port"
+	"payment-platform/pkg/catalog"
 	"payment-platform/pkg/eventbus"
 )
 
@@ -20,6 +19,14 @@ type OrderService struct {
 	products  port.ProductClient
 	log       *slog.Logger
 }
+
+var (
+	ErrUnauthorized    = errors.New("user does not own this order")
+	ErrNotFound        = errors.New("order not found")
+	ErrInvalidProduct  = errors.New("invalid product")
+	ErrInsufficientStock = errors.New("insufficient stock")
+	ErrCurrencyMismatch  = errors.New("currency mismatch")
+)
 
 func New(repo port.OrderRepository, pub port.EventPublisher, products port.ProductClient, log *slog.Logger) *OrderService {
 	return &OrderService{repo: repo, publisher: pub, products: products, log: log}
@@ -86,16 +93,19 @@ func (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) 
 			Quantity:  input.Quantity,
 			Price:     p.Price, // authoritative price from catalog
 		}
-		if len(p.Variants) > 0 && input.VariantID == nil {
+		if (len(p.Attributes) > 0 || len(p.Variants) > 0) && input.VariantID == nil {
 			return nil, fmt.Errorf("%w: product %s requires a variant", ErrInvalidProduct, input.ProductID)
 		}
 		if input.VariantID != nil {
-			variant, ok := findVariantInfo(p, input.VariantID)
+			variant, ok := catalog.FindVariant(p, input.VariantID)
 			if !ok {
 				return nil, fmt.Errorf("%w: variant %s not found for product %s", ErrInvalidProduct, *input.VariantID, input.ProductID)
 			}
 			if variant.Status != "active" {
 				return nil, fmt.Errorf("%w: variant %s is %s", ErrInvalidProduct, variant.ID, variant.Status)
+			}
+			if !catalog.VariantMatchesAttributes(p, variant) {
+				return nil, fmt.Errorf("%w: variant %s no longer matches the current product attributes", ErrInvalidProduct, variant.ID)
 			}
 			if variant.Stock < input.Quantity {
 				return nil, fmt.Errorf("%w: variant %s has %d in stock, requested %d",
@@ -103,7 +113,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) 
 			}
 			items[i].VariantID = input.VariantID
 			items[i].VariantSKU = variant.SKU
-			items[i].VariantLabel = formatVariantLabel(variant.AttributeValues)
+			items[i].VariantLabel = catalog.FormatVariantLabel(variant.AttributeValues)
 			if variant.Price != nil {
 				items[i].Price = *variant.Price
 			}
@@ -216,10 +226,14 @@ func (s *OrderService) HandlePaymentSucceeded(ctx context.Context, orderID strin
 }
 
 func (s *OrderService) publishOrderConfirmed(ctx context.Context, order *domain.Order) {
-	data, _ := json.Marshal(eventbus.OrderConfirmedData{
+	data, err := json.Marshal(eventbus.OrderConfirmedData{
 		OrderID: order.ID,
 		UserID:  order.UserID,
 	})
+	if err != nil {
+		s.log.Error("failed to marshal orders.confirmed", "order_id", order.ID, "err", err)
+		return
+	}
 	meta := eventbus.Metadata{CorrelationID: order.ID, UserID: order.UserID}
 	event := eventbus.NewEvent("order.confirmed", order.ID, "order", data, meta)
 	if err := s.publisher.Publish(ctx, eventbus.SubjectOrderConfirmed, event); err != nil {
@@ -266,11 +280,6 @@ func (s *OrderService) HandlePaymentFailed(ctx context.Context, orderID string) 
 	return s.repo.UpdateStatus(ctx, order.ID, order.Status)
 }
 
-var ErrUnauthorized = errors.New("user does not own this order")
-var ErrNotFound = errors.New("order not found")
-var ErrInvalidProduct = errors.New("invalid product")
-var ErrInsufficientStock = errors.New("insufficient stock")
-var ErrCurrencyMismatch = errors.New("currency mismatch")
 
 func (s *OrderService) marshalOrderCreated(order *domain.Order, paymentMethod string) ([]byte, error) {
 	payloadData, err := json.Marshal(eventbus.OrderCreatedData{
@@ -279,7 +288,7 @@ func (s *OrderService) marshalOrderCreated(order *domain.Order, paymentMethod st
 		Items:          toEventItems(order.Items),
 		TotalAmount:    order.TotalAmount,
 		Currency:       order.Currency,
-		PaymentMethod:  normalizeOrderPaymentMethod(paymentMethod),
+		PaymentMethod:  eventbus.NormalizePaymentMethod(paymentMethod),
 		IdempotencyKey: order.IdempotencyKey,
 		StoreID:        order.StoreID,
 	})
@@ -334,38 +343,3 @@ func toEventItems(items []domain.OrderItem) []eventbus.OrderItem {
 	return out
 }
 
-func findVariantInfo(product port.ProductInfo, variantID *string) (port.VariantInfo, bool) {
-	if variantID == nil {
-		return port.VariantInfo{}, false
-	}
-	for _, variant := range product.Variants {
-		if variant.ID == *variantID {
-			return variant, true
-		}
-	}
-	return port.VariantInfo{}, false
-}
-
-func formatVariantLabel(values map[string]string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, fmt.Sprintf("%s: %s", key, values[key]))
-	}
-	return strings.Join(parts, " / ")
-}
-
-func normalizeOrderPaymentMethod(method string) string {
-	if method == "wallet" {
-		return "wallet"
-	}
-	return "card"
-}

@@ -1,24 +1,36 @@
 import axios from 'axios';
+import { useAuthStore } from './store';
 
 const api = axios.create({
   baseURL: '',
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true, // send httpOnly auth cookies on every request
 });
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+let isRefreshing = false;
 
 api.interceptors.response.use(
   (res) => res,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
+  async (error) => {
+    const original = error.config;
+    if (
+      error.response?.status === 401 &&
+      !original._retry &&
+      !original.url?.includes('/auth/refresh')
+    ) {
+      original._retry = true;
+      if (!isRefreshing) {
+        isRefreshing = true;
+        try {
+          await api.post('/auth/refresh'); // refresh_token cookie sent automatically
+          isRefreshing = false;
+          return api(original);
+        } catch {
+          isRefreshing = false;
+          useAuthStore.getState().clearAuth();
+          window.location.href = '/login';
+        }
+      }
     }
     return Promise.reject(error);
   },
@@ -39,8 +51,7 @@ export const authApi = {
   login: (data: { email: string; password: string }) =>
     api.post('/auth/login', data),
   me: () => api.get('/auth/me'),
-  logout: (refresh_token: string) =>
-    api.post('/auth/logout', { refresh_token }),
+  logout: () => api.post('/auth/logout'),
 };
 
 export const ordersApi = {
@@ -80,8 +91,33 @@ export const walletApi = {
 };
 
 export const productsApi = {
-  list: (params?: { store_id?: string; limit?: number; offset?: number }) =>
-    api.get('/api/v1/products', { params: { limit: 20, offset: 0, ...params } }),
+  list: (params?: {
+    store_id?: string;
+    category?: string;
+    category_id?: string;
+    subcategory_id?: string;
+    status?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    attribute_filters?: Record<string, string[]>;
+  }) => {
+    const queryParams: Record<string, string | number> = {
+      limit: params?.limit ?? 20,
+      offset: params?.offset ?? 0,
+    };
+    if (params?.store_id) queryParams.store_id = params.store_id;
+    if (params?.category) queryParams.category = params.category;
+    if (params?.category_id) queryParams.category_id = params.category_id;
+    if (params?.subcategory_id) queryParams.subcategory_id = params.subcategory_id;
+    if (params?.status) queryParams.status = params.status;
+    if (params?.search) queryParams.search = params.search;
+    for (const [name, values] of Object.entries(params?.attribute_filters ?? {})) {
+      if (values.length === 0) continue;
+      queryParams[`attr.${name}`] = values.join(',');
+    }
+    return api.get('/api/v1/products', { params: queryParams });
+  },
   get: (id: string) => api.get(`/api/v1/products/${id}`),
   create: (data: object) => api.post('/api/v1/products', data),
   update: (id: string, data: object) =>
@@ -105,12 +141,25 @@ export const productsApi = {
 };
 
 export const attributesApi = {
-  list: () => api.get('/api/v1/attributes'),
-  create: (data: { name: string; values: string[] }) =>
+  list: (params?: { subcategory_id?: string; category_id?: string }) => api.get('/api/v1/attributes', { params }),
+  categories: () => api.get('/api/v1/attributes/categories'),
+  create: (data: { subcategory_id: string; name: string; values: string[] }) =>
     api.post('/api/v1/admin/attributes', data),
-  update: (id: string, data: { name?: string; values?: string[] }) =>
+  update: (id: string, data: { subcategory_id?: string; name?: string; values?: string[] }) =>
     api.patch(`/api/v1/admin/attributes/${id}`, data),
   delete: (id: string) => api.delete(`/api/v1/admin/attributes/${id}`),
+};
+
+export const categoriesApi = {
+  list: () => api.get('/api/v1/categories'),
+  listSubcategories: (categoryId: string) => api.get(`/api/v1/categories/${categoryId}/subcategories`),
+  create: (data: { name: string }) => api.post('/api/v1/admin/categories', data),
+  update: (id: string, data: { name?: string }) => api.patch(`/api/v1/admin/categories/${id}`, data),
+  delete: (id: string) => api.delete(`/api/v1/admin/categories/${id}`),
+  createSubcategory: (data: { category_id: string; name: string }) => api.post('/api/v1/admin/subcategories', data),
+  updateSubcategory: (id: string, data: { category_id?: string; name?: string }) =>
+    api.patch(`/api/v1/admin/subcategories/${id}`, data),
+  deleteSubcategory: (id: string) => api.delete(`/api/v1/admin/subcategories/${id}`),
 };
 
 export const storesApi = {

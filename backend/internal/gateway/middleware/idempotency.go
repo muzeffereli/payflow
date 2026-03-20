@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -64,7 +63,7 @@ func Idempotency(cfg config.RedisConfig) gin.HandlerFunc {
 
 		redisKey := "idempotency:" + c.FullPath() + ":" + key
 
-		cached, err := rdb.Get(context.Background(), redisKey).Bytes()
+		cached, err := rdb.Get(c.Request.Context(), redisKey).Bytes()
 		if err == nil {
 			var resp cachedResponse
 			if json.Unmarshal(cached, &resp) == nil {
@@ -99,7 +98,7 @@ func Idempotency(cfg config.RedisConfig) gin.HandlerFunc {
 		}
 
 		if data, err := json.Marshal(resp); err == nil {
-			rdb.Set(context.Background(), redisKey, data, idempotencyTTL)
+			rdb.Set(c.Request.Context(), redisKey, data, idempotencyTTL)
 		}
 	}
 }

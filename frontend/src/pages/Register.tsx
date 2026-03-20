@@ -20,11 +20,9 @@ export function Register() {
     setError('');
     setLoading(true);
     try {
-      const res = await authApi.register({ name, email, password });
-      const { access_token, refresh_token } = res.data;
-      localStorage.setItem('access_token', access_token);
+      await authApi.register({ name, email, password }); // sets httpOnly cookies
       const meRes = await authApi.me();
-      setAuth(meRes.data, access_token, refresh_token);
+      setAuth(meRes.data);
       navigate('/dashboard');
     } catch (error: unknown) {
       setError(getApiErrorMessage(error, 'Registration failed'));

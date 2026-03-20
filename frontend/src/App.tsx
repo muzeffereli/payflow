@@ -16,6 +16,7 @@ import { ProductDetail } from './pages/ProductDetail';
 import { Withdrawals } from './pages/Withdrawals';
 import { AdminWithdrawals } from './pages/AdminWithdrawals';
 import { AdminAttributes } from './pages/AdminAttributes';
+import { AdminCategories } from './pages/AdminCategories';
 import { AdminFraudAlerts } from './pages/AdminFraudAlerts';
 import { AdminUsers } from './pages/AdminUsers';
 import { AdminStores } from './pages/AdminStores';
@@ -91,6 +92,14 @@ export default function App() {
               element={
                 <RoleRoute allowedRoles={['admin']}>
                   <AdminWithdrawals />
+                </RoleRoute>
+              }
+            />
+            <Route
+              path="/admin/categories"
+              element={
+                <RoleRoute allowedRoles={['admin']}>
+                  <AdminCategories />
                 </RoleRoute>
               }
             />

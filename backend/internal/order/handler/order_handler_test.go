@@ -347,6 +347,10 @@ func TestCreateOrder_WithVariantUsesVariantStock(t *testing.T) {
 		Currency: "USD",
 		Stock:    1,
 		Status:   "active",
+		Attributes: []port.AttributeInfo{
+			{Name: "color", Values: []string{"blue"}},
+			{Name: "size", Values: []string{"L"}},
+		},
 		Variants: []port.VariantInfo{
 			{
 				ID:     "variant-1",
@@ -427,5 +431,48 @@ func TestCreateOrder_ValidationErrorsReturnBadRequest(t *testing.T) {
 	}
 	if result["error"] == "" {
 		t.Fatal("expected error message in response")
+	}
+}
+
+func TestCreateOrder_RejectsStaleVariantAfterAttributeExpansion(t *testing.T) {
+	r := buildRouter(t, port.ProductInfo{
+		ID:       "prod-stale-variant",
+		Name:     "Codex Mug",
+		Price:    1500,
+		Currency: "USD",
+		Stock:    10,
+		Status:   "active",
+		Attributes: []port.AttributeInfo{
+			{Name: "Color", Values: []string{"Red", "Grey"}},
+			{Name: "Size", Values: []string{"M", "L"}},
+		},
+		Variants: []port.VariantInfo{{
+			ID:     "variant-stale",
+			SKU:    "CODEX-MUG-V1",
+			Stock:  5,
+			Status: "active",
+			AttributeValues: map[string]string{
+				"Color": "Red",
+			},
+		}},
+	})
+
+	body := map[string]any{
+		"currency": "USD",
+		"items": []map[string]any{{
+			"product_id": "prod-stale-variant",
+			"variant_id": "variant-stale",
+			"quantity":   1,
+		}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders", mustJSON(t, body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "stale-variant-key")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }

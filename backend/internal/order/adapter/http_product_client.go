@@ -39,13 +39,19 @@ func NewHTTPProductClient(baseURL string) port.ProductClient {
 }
 
 type productResponse struct {
-	ID       string            `json:"id"`
-	Name     string            `json:"name"`
-	Price    int64             `json:"price"`
-	Currency string            `json:"currency"`
-	Stock    int               `json:"stock"`
-	Status   string            `json:"status"`
-	Variants []variantResponse `json:"variants,omitempty"`
+	ID         string              `json:"id"`
+	Name       string              `json:"name"`
+	Price      int64               `json:"price"`
+	Currency   string              `json:"currency"`
+	Stock      int                 `json:"stock"`
+	Status     string              `json:"status"`
+	Attributes []attributeResponse `json:"attributes,omitempty"`
+	Variants   []variantResponse   `json:"variants,omitempty"`
+}
+
+type attributeResponse struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
 }
 
 type variantResponse struct {
@@ -112,14 +118,19 @@ func (c *httpProductClient) doGetProducts(ctx context.Context, ids []string) ([]
 				AttributeValues: variant.AttributeValues,
 			}
 		}
+		attributes := make([]port.AttributeInfo, len(p.Attributes))
+		for j, attribute := range p.Attributes {
+			attributes[j] = port.AttributeInfo{Name: attribute.Name, Values: attribute.Values}
+		}
 		result[i] = port.ProductInfo{
-			ID:       p.ID,
-			Name:     p.Name,
-			Price:    p.Price,
-			Currency: p.Currency,
-			Stock:    p.Stock,
-			Status:   p.Status,
-			Variants: variants,
+			ID:         p.ID,
+			Name:       p.Name,
+			Price:      p.Price,
+			Currency:   p.Currency,
+			Stock:      p.Stock,
+			Status:     p.Status,
+			Attributes: attributes,
+			Variants:   variants,
 		}
 	}
 	return result, nil

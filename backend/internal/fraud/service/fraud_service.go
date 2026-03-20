@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
+
 	"payment-platform/internal/fraud/domain"
 	"payment-platform/internal/fraud/port"
 	"payment-platform/pkg/eventbus"
@@ -63,8 +65,9 @@ func (s *FraudService) HandlePaymentInitiated(ctx context.Context, data eventbus
 	)
 
 	if s.repo != nil {
+		checkID := uuid.New().String()
 		fc := &domain.FraudCheck{
-			ID:        req.PaymentID + "-check",
+			ID:        checkID,
 			PaymentID: req.PaymentID,
 			OrderID:   req.OrderID,
 			UserID:    req.UserID,
@@ -122,7 +125,7 @@ func (s *FraudService) Check(ctx context.Context, req domain.FraudCheckRequest) 
 
 func (s *FraudService) publishDecision(ctx context.Context, req domain.FraudCheckRequest, d domain.FraudDecision) error {
 	payload := eventbus.FraudCheckResultData{
-		CheckID:   req.PaymentID + "-check",
+		CheckID:   uuid.New().String(),
 		PaymentID: req.PaymentID,
 		OrderID:   req.OrderID,
 		RiskScore: d.RiskScore,
@@ -130,7 +133,10 @@ func (s *FraudService) publishDecision(ctx context.Context, req domain.FraudChec
 		Rules:     d.Rules,
 	}
 
-	data, _ := json.Marshal(payload)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal fraud decision: %w", err)
+	}
 	meta := eventbus.Metadata{CorrelationID: req.OrderID, UserID: req.UserID}
 
 	var subject string

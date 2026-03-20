@@ -243,3 +243,37 @@ func TestCheckout_OrderServiceError(t *testing.T) {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
 }
+
+func TestAddItem_RejectsStaleVariantAfterAttributeExpansion(t *testing.T) {
+	r, _ := buildCartRouter(t, newFakeProducts(port.ProductInfo{
+		ID:       "prod-variant",
+		Name:     "Codex Mug",
+		Price:    1200,
+		Currency: "USD",
+		Stock:    10,
+		Status:   "active",
+		Attributes: []port.AttributeInfo{
+			{Name: "Color", Values: []string{"Red", "Grey"}},
+			{Name: "Size", Values: []string{"M", "L"}},
+		},
+		Variants: []port.VariantInfo{{
+			ID:     "variant-1",
+			SKU:    "CODEX-MUG-V1",
+			Stock:  3,
+			Status: "active",
+			AttributeValues: map[string]string{
+				"Color": "Red",
+			},
+		}},
+	}), &fakeOrderClient{})
+
+	body := map[string]any{"product_id": "prod-variant", "variant_id": "variant-1", "quantity": 1}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cart/items", mustMarshal(t, body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}

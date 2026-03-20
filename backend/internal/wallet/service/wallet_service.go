@@ -20,6 +20,8 @@ type WalletService struct {
 	log                  *slog.Logger
 }
 
+var ErrNotFound = errors.New("wallet not found")
+
 func New(repo port.WalletRepository, pub port.EventPublisher, log *slog.Logger, platformWalletUserID string) *WalletService {
 	return &WalletService{
 		repo:                 repo,
@@ -215,13 +217,18 @@ func (s *WalletService) HandlePaymentRefunded(ctx context.Context, data eventbus
 	return s.Credit(ctx, data.UserID, data.Amount, "refund", data.RefundID)
 }
 
-func (s *WalletService) HandleOrderCancelled(ctx context.Context, data eventbus.OrderCancelledData) error {
-	s.log.Info("order cancelled - checking for wallet reversal", "order_id", data.OrderID)
+// HandleOrderCancelled is intentionally a no-op.
+// Wallet debits only occur when a payment succeeds (via processPayment in the payment service).
+// If the wallet debit fails the payment is marked failed — no debit happened.
+// If the order is cancelled while still pending/confirmed, no debit has occurred yet.
+// Paid orders go through the refund flow (HandlePaymentRefunded) which already credits the buyer.
+func (s *WalletService) HandleOrderCancelled(_ context.Context, data eventbus.OrderCancelledData) error {
+	s.log.Debug("order cancelled — no wallet action required", "order_id", data.OrderID)
 	return nil
 }
 
 func (s *WalletService) publishSettlementCompleted(ctx context.Context, data eventbus.PaymentSucceededData, sellerAmount int64) {
-	payload, _ := json.Marshal(eventbus.SettlementCompletedData{
+	payload, err := json.Marshal(eventbus.SettlementCompletedData{
 		PaymentID:    data.PaymentID,
 		OrderID:      data.OrderID,
 		StoreID:      *data.StoreID,
@@ -231,6 +238,10 @@ func (s *WalletService) publishSettlementCompleted(ctx context.Context, data eve
 		SellerAmount: sellerAmount,
 		Currency:     data.Currency,
 	})
+	if err != nil {
+		s.log.Error("failed to marshal settlement.completed", "payment_id", data.PaymentID, "err", err)
+		return
+	}
 	meta := eventbus.Metadata{CorrelationID: data.OrderID, UserID: data.StoreOwnerID}
 	event := eventbus.NewEvent("settlement.completed", data.PaymentID, "payment", payload, meta)
 	if err := s.publisher.Publish(ctx, eventbus.SubjectSettlementCompleted, event); err != nil {
@@ -239,13 +250,17 @@ func (s *WalletService) publishSettlementCompleted(ctx context.Context, data eve
 }
 
 func (s *WalletService) publishCredited(ctx context.Context, w *domain.Wallet, tx *domain.Transaction) {
-	data, _ := json.Marshal(eventbus.WalletCreditedData{
+	data, err := json.Marshal(eventbus.WalletCreditedData{
 		WalletID:      w.ID,
 		UserID:        w.UserID,
 		Amount:        tx.Amount,
 		TransactionID: tx.ID,
 		Source:        tx.Source,
 	})
+	if err != nil {
+		s.log.Error("failed to marshal wallet.credited", "wallet_id", w.ID, "err", err)
+		return
+	}
 
 	meta := eventbus.Metadata{CorrelationID: tx.ReferenceID, UserID: w.UserID}
 	event := eventbus.NewEvent("wallet.credited", w.ID, "wallet", data, meta)
@@ -299,5 +314,3 @@ func commitTx(tx *sql.Tx) error {
 	}
 	return tx.Commit()
 }
-
-var ErrNotFound = errors.New("wallet not found")

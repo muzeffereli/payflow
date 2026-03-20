@@ -37,15 +37,15 @@ func main() {
 
 	log.Info("api gateway starting", "port", cfg.Port)
 
-	authAddr := envOrDefault("AUTH_SERVICE_ADDR", "http://localhost:8086")
-	orderAddr := envOrDefault("ORDER_SERVICE_ADDR", "http://localhost:8081")
-	paymentAddr := envOrDefault("PAYMENT_SERVICE_ADDR", "http://localhost:8082")
-	walletAddr := envOrDefault("WALLET_SERVICE_ADDR", "http://localhost:8083")
-	productAddr := envOrDefault("PRODUCT_SERVICE_ADDR", "http://localhost:8087")
-	cartAddr := envOrDefault("CART_SERVICE_ADDR", "http://localhost:8088")
-	fraudAddr := envOrDefault("FRAUD_SERVICE_ADDR", "http://localhost:8085")
-	notifAddr := envOrDefault("NOTIFICATION_SERVICE_ADDR", "http://localhost:8084")
-	storeAddr := envOrDefault("STORE_SERVICE_ADDR", "http://localhost:8089")
+	authAddr := cfg.Services.AuthAddr
+	orderAddr := cfg.Services.OrderAddr
+	paymentAddr := cfg.Services.PaymentAddr
+	walletAddr := cfg.Services.WalletAddr
+	productAddr := cfg.Services.ProductAddr
+	cartAddr := cfg.Services.CartAddr
+	fraudAddr := cfg.Services.FraudAddr
+	notifAddr := cfg.Services.NotificationAddr
+	storeAddr := cfg.Services.StoreAddr
 
 	authProxy, err := handler.NewServiceProxy(authAddr)
 	if err != nil {
@@ -149,10 +149,12 @@ func main() {
 	})
 	router.GET("/metrics", metrics.Handler())
 
+	authRateLimit := middleware.AuthRateLimit(cfg.Redis, 10, time.Minute)
+
 	authGroup := router.Group("/auth")
 	{
-		authGroup.POST("/register", authProxy.Forward)
-		authGroup.POST("/login", authProxy.Forward)
+		authGroup.POST("/register", authRateLimit, authProxy.Forward)
+		authGroup.POST("/login", authRateLimit, authProxy.Forward)
 		authGroup.POST("/refresh", authProxy.Forward)
 		authGroup.POST("/logout", authProxy.Forward)
 		authGroup.GET("/me", authProxy.Forward)
@@ -207,7 +209,22 @@ func main() {
 			adminAttrs.PATCH("/:id", productProxy.Forward)
 			adminAttrs.DELETE("/:id", productProxy.Forward)
 		}
+		adminCategories := v1.Group("/admin/categories")
+		{
+			adminCategories.POST("", productProxy.Forward)
+			adminCategories.GET("", productProxy.Forward)
+			adminCategories.PATCH("/:id", productProxy.Forward)
+			adminCategories.DELETE("/:id", productProxy.Forward)
+		}
+		adminSubcategories := v1.Group("/admin/subcategories")
+		{
+			adminSubcategories.POST("", productProxy.Forward)
+			adminSubcategories.PATCH("/:id", productProxy.Forward)
+			adminSubcategories.DELETE("/:id", productProxy.Forward)
+		}
 		v1.GET("/attributes", productProxy.Forward)
+		v1.GET("/categories", productProxy.Forward)
+		v1.GET("/categories/:id/subcategories", productProxy.Forward)
 
 		cart := v1.Group("/cart")
 		{
@@ -329,9 +346,3 @@ func main() {
 	log.Info("api gateway stopped")
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}

@@ -9,15 +9,16 @@ import (
 )
 
 type Attribute struct {
-	ID        string    `json:"id"         db:"id"`
-	ProductID string    `json:"product_id" db:"product_id"`
-	Name      string    `json:"name"       db:"name"`
-	Values    []string  `json:"values"     db:"values"`
-	Position  int       `json:"position"   db:"position"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	ID                string    `json:"id"                            db:"id"`
+	ProductID         string    `json:"product_id"                    db:"product_id"`
+	GlobalAttributeID *string   `json:"global_attribute_id,omitempty" db:"global_attribute_id"`
+	Name              string    `json:"name"                          db:"name"`
+	Values            []string  `json:"values"                        db:"values"`
+	Position          int       `json:"position"                      db:"position"`
+	CreatedAt         time.Time `json:"created_at"                    db:"created_at"`
 }
 
-func NewAttribute(productID, name string, values []string, position int) (*Attribute, error) {
+func NewAttribute(productID string, globalAttributeID *string, name string, values []string, position int) (*Attribute, error) {
 	if name == "" {
 		return nil, errors.New("attribute name is required")
 	}
@@ -25,12 +26,13 @@ func NewAttribute(productID, name string, values []string, position int) (*Attri
 		return nil, errors.New("attribute must have at least one value")
 	}
 	return &Attribute{
-		ID:        uuid.New().String(),
-		ProductID: productID,
-		Name:      name,
-		Values:    values,
-		Position:  position,
-		CreatedAt: time.Now().UTC(),
+		ID:                uuid.New().String(),
+		ProductID:         productID,
+		GlobalAttributeID: globalAttributeID,
+		Name:              name,
+		Values:            values,
+		Position:          position,
+		CreatedAt:         time.Now().UTC(),
 	}, nil
 }
 

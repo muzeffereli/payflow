@@ -25,19 +25,22 @@ type ProductImage struct {
 }
 
 type Product struct {
-	ID          string        `json:"id"          db:"id"`
-	Name        string        `json:"name"        db:"name"`
-	Description string        `json:"description" db:"description"`
-	SKU         string        `json:"sku"         db:"sku"`
-	Price       int64         `json:"price"       db:"price"` // unit price in cents
-	Currency    string        `json:"currency"    db:"currency"`
-	Stock       int           `json:"stock"       db:"stock"`
-	Category    string        `json:"category"    db:"category"`
-	Status      ProductStatus `json:"status"      db:"status"`
-	StoreID     *string       `json:"store_id,omitempty" db:"store_id"` // nil = platform product
-	ImageURL    string        `json:"image_url"   db:"image_url"`       // first image (thumbnail)
-	CreatedAt   time.Time     `json:"created_at"  db:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"  db:"updated_at"`
+	ID            string        `json:"id"                         db:"id"`
+	Name          string        `json:"name"                       db:"name"`
+	Description   string        `json:"description"                db:"description"`
+	SKU           string        `json:"sku"                        db:"sku"`
+	Price         int64         `json:"price"                      db:"price"` // unit price in cents
+	Currency      string        `json:"currency"                   db:"currency"`
+	Stock         int           `json:"stock"                      db:"stock"`
+	CategoryID    string        `json:"category_id"                db:"category_id"`
+	Category      string        `json:"category"                   db:"category"`
+	SubcategoryID *string       `json:"subcategory_id,omitempty"   db:"subcategory_id"`
+	Subcategory   string        `json:"subcategory,omitempty"      db:"subcategory"`
+	Status        ProductStatus `json:"status"                     db:"status"`
+	StoreID       *string       `json:"store_id,omitempty"         db:"store_id"`  // nil = platform product
+	ImageURL      string        `json:"image_url"                  db:"image_url"` // first image (thumbnail)
+	CreatedAt     time.Time     `json:"created_at"                 db:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"                 db:"updated_at"`
 
 	Attributes []*Attribute    `json:"attributes,omitempty"`
 	Variants   []*Variant      `json:"variants,omitempty"`

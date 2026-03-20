@@ -229,7 +229,7 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
                         </p>
                         {(item.variant_label || item.variant_sku) && (
                           <p className="mt-0.5 text-xs text-zinc-500">
-                            {[item.variant_label, item.variant_sku].filter(Boolean).join(' Â· ')}
+                            {[item.variant_label, item.variant_sku].filter(Boolean).join(' · ')}
                           </p>
                         )}
                         <p className="text-xs text-zinc-500 mt-0.5">

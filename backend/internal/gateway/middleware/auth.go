@@ -29,21 +29,21 @@ func Auth(cfg config.JWTConfig) gin.HandlerFunc {
 			return
 		}
 
-		header := c.GetHeader("Authorization")
-		if header == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header required"})
-			return
-		}
-
+		// Prefer Authorization header; fall back to httpOnly cookie.
 		var token string
-		if scheme, rest, found := strings.Cut(header, " "); found {
-			if !strings.EqualFold(scheme, "bearer") {
+		header := c.GetHeader("Authorization")
+		if header != "" {
+			scheme, rest, found := strings.Cut(header, " ")
+			if !found || !strings.EqualFold(scheme, "bearer") {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization format"})
 				return
 			}
 			token = rest
+		} else if cookie, err := c.Cookie("access_token"); err == nil && cookie != "" {
+			token = cookie
 		} else {
-			token = header
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+			return
 		}
 
 		claims, err := manager.VerifyAccess(token)

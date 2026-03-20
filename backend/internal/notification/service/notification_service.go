@@ -75,7 +75,7 @@ func (s *NotificationService) onUserRegistered(ctx context.Context, event eventb
 	}
 
 	title := "Welcome to PayFlow!"
-	body := formatf("Hi %s, your account has been created successfully.", data.Name)
+	body := fmt.Sprintf("Hi %s, your account has been created successfully.", data.Name)
 	s.persist(ctx, data.UserID, "welcome", title, body, map[string]interface{}{"email": data.Email})
 	return s.sender.SendEmail(ctx, data.Email, title, body)
 }
@@ -98,7 +98,7 @@ func (s *NotificationService) onPaymentSucceeded(ctx context.Context, event even
 	userID := event.Metadata.UserID
 	email := s.emailOrFallback(event)
 	title := "Payment Received"
-	body := formatf("Your payment of %s has been processed successfully.", formatCents(data.Amount))
+	body := fmt.Sprintf("Your payment of %s has been processed successfully.", formatCents(data.Amount))
 	s.persist(ctx, userID, "payment", title, body, map[string]interface{}{
 		"payment_id": data.PaymentID, "order_id": data.OrderID, "amount": data.Amount,
 	})
@@ -114,7 +114,7 @@ func (s *NotificationService) onPaymentFailed(ctx context.Context, event eventbu
 	userID := event.Metadata.UserID
 	email := s.emailOrFallback(event)
 	title := "Payment Failed"
-	body := formatf("Payment for order %s failed: %s. Please update your payment method.", data.OrderID, data.Reason)
+	body := fmt.Sprintf("Payment for order %s failed: %s. Please update your payment method.", data.OrderID, data.Reason)
 	s.persist(ctx, userID, "payment", title, body, map[string]interface{}{
 		"order_id": data.OrderID, "reason": data.Reason,
 	})
@@ -130,7 +130,7 @@ func (s *NotificationService) onPaymentRefunded(ctx context.Context, event event
 	userID := event.Metadata.UserID
 	email := s.emailOrFallback(event)
 	title := "Refund Processed"
-	body := formatf("Your refund of %s for order %s has been processed.", formatCents(data.Amount), data.OrderID)
+	body := fmt.Sprintf("Your refund of %s for order %s has been processed.", formatCents(data.Amount), data.OrderID)
 	s.persist(ctx, userID, "refund", title, body, map[string]interface{}{
 		"order_id": data.OrderID, "amount": data.Amount,
 	})
@@ -146,7 +146,7 @@ func (s *NotificationService) onWalletCredited(ctx context.Context, event eventb
 	userID := event.Metadata.UserID
 	email := s.emailOrFallback(event)
 	title := "Wallet Balance Updated"
-	body := formatf("%s has been added to your wallet. Source: %s.", formatCents(data.Amount), data.Source)
+	body := fmt.Sprintf("%s has been added to your wallet. Source: %s.", formatCents(data.Amount), data.Source)
 	s.persist(ctx, userID, "wallet", title, body, map[string]interface{}{
 		"source": data.Source, "amount": data.Amount,
 	})
@@ -162,7 +162,7 @@ func (s *NotificationService) onFraudRejected(ctx context.Context, event eventbu
 	userID := event.Metadata.UserID
 	email := s.emailOrFallback(event)
 	title := "Order Flagged for Review"
-	body := formatf("Your order %s has been flagged for security review. Our team will contact you.", data.OrderID)
+	body := fmt.Sprintf("Your order %s has been flagged for security review. Our team will contact you.", data.OrderID)
 	s.persist(ctx, userID, "fraud", title, body, map[string]interface{}{
 		"order_id": data.OrderID, "risk_score": data.RiskScore,
 	})
@@ -178,11 +178,5 @@ func (s *NotificationService) emailOrFallback(event eventbus.Event) string {
 }
 
 func formatCents(cents int64) string {
-	dollars := cents / 100
-	pennies := cents % 100
-	return formatf("$%d.%02d", dollars, pennies)
-}
-
-func formatf(format string, args ...any) string {
-	return fmt.Sprintf(format, args...)
+	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
 }

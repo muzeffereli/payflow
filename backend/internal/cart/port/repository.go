@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"payment-platform/internal/cart/domain"
+	"payment-platform/pkg/catalog"
 )
 
 type CartRepository interface {
@@ -18,25 +19,10 @@ type ProductClient interface {
 	GetProducts(ctx context.Context, ids []string) ([]ProductInfo, error)
 }
 
-type ProductInfo struct {
-	ID       string
-	Name     string
-	Price    int64 // unit price in cents
-	Currency string
-	Stock    int
-	Status   string  // "active" | "inactive"
-	StoreID  *string // nil = platform product
-	Variants []VariantInfo
-}
-
-type VariantInfo struct {
-	ID              string
-	SKU             string
-	Price           *int64
-	Stock           int
-	Status          string
-	AttributeValues map[string]string
-}
+// Type aliases so existing code using port.ProductInfo compiles unchanged.
+type ProductInfo = catalog.ProductInfo
+type AttributeInfo = catalog.AttributeInfo
+type VariantInfo = catalog.VariantInfo
 
 type OrderClient interface {
 	CreateOrder(ctx context.Context, req CreateOrderRequest) (string, error)

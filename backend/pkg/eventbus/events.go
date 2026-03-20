@@ -25,6 +25,15 @@ type Metadata struct {
 	TraceID       string `json:"trace_id,omitempty"` // OpenTelemetry trace ID
 }
 
+// NormalizePaymentMethod coerces any unrecognised value to "card".
+// The canonical payment methods are "card" and "wallet".
+func NormalizePaymentMethod(method string) string {
+	if method == "wallet" {
+		return "wallet"
+	}
+	return "card"
+}
+
 func NewEvent(eventType, aggregateID, aggregateType string, data []byte, meta Metadata) Event {
 	return Event{
 		ID:            uuid.New().String(),
@@ -229,6 +238,7 @@ const (
 	SubjectStoreCreated        = "stores.created"
 	SubjectStoreApproved       = "stores.approved"
 	SubjectStoreSuspended      = "stores.suspended"
+	SubjectStoreReactivated    = "stores.reactivated"
 	SubjectStoreClosed         = "stores.closed"
 	SubjectSettlementCompleted = "settlements.completed"
 	SubjectWithdrawalRequested = "withdrawals.requested"

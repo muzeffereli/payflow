@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"payment-platform/internal/store/domain"
@@ -123,11 +122,12 @@ func (s *StoreService) ReactivateStore(ctx context.Context, storeID string) (*do
 	if err := s.repo.Update(ctx, store); err != nil {
 		return nil, err
 	}
-	s.publishAsync(ctx, eventbus.SubjectStoreApproved, eventbus.StoreStatusChangedData{
+	s.publishAsync(ctx, eventbus.SubjectStoreReactivated, eventbus.StoreStatusChangedData{
 		StoreID: store.ID,
 		OwnerID: store.OwnerID,
 		Status:  string(store.Status),
 	})
+	s.log.Info("store reactivated", "store_id", storeID)
 	return store, nil
 }
 
@@ -150,11 +150,10 @@ func (s *StoreService) CloseStore(ctx context.Context, storeID, callerID, caller
 }
 
 func (s *StoreService) publishAsync(ctx context.Context, subject string, data interface{}) {
+	detached := context.WithoutCancel(ctx) // preserve trace, detach from request lifetime
 	go func() {
-		if err := s.pub.Publish(ctx, subject, data); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				s.log.Error("failed to publish event", "subject", subject, "err", err)
-			}
+		if err := s.pub.Publish(detached, subject, data); err != nil {
+			s.log.Error("failed to publish event", "subject", subject, "err", err)
 		}
 	}()
 }

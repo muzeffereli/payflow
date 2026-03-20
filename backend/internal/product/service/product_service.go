@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"payment-platform/internal/product/domain"
@@ -18,14 +20,27 @@ type ProductService struct {
 	reservations port.ReservationRepository
 	attributes   port.AttributeRepository
 	variants     port.VariantRepository
+	globalAttrs  port.GlobalAttributeRepository
+	categories   port.CategoryRepository
 	images       port.ImageRepository
 	publisher    port.EventPublisher
 	stores       port.StoreClient
 	log          *slog.Logger
 }
 
-func New(repo port.ProductRepository, reservations port.ReservationRepository, attrs port.AttributeRepository, variants port.VariantRepository, images port.ImageRepository, pub port.EventPublisher, stores port.StoreClient, log *slog.Logger) *ProductService {
-	return &ProductService{repo: repo, reservations: reservations, attributes: attrs, variants: variants, images: images, publisher: pub, stores: stores, log: log}
+func New(repo port.ProductRepository, reservations port.ReservationRepository, attrs port.AttributeRepository, variants port.VariantRepository, globalAttrs port.GlobalAttributeRepository, categories port.CategoryRepository, images port.ImageRepository, pub port.EventPublisher, stores port.StoreClient, log *slog.Logger) *ProductService {
+	return &ProductService{
+		repo:         repo,
+		reservations: reservations,
+		attributes:   attrs,
+		variants:     variants,
+		globalAttrs:  globalAttrs,
+		categories:   categories,
+		images:       images,
+		publisher:    pub,
+		stores:       stores,
+		log:          log,
+	}
 }
 
 type AttributeInput struct {
@@ -34,18 +49,20 @@ type AttributeInput struct {
 }
 
 type CreateRequest struct {
-	Name        string
-	Description string
-	SKU         string
-	Price       int64 // cents
-	Currency    string
-	Category    string
-	Stock       int
-	StoreID     *string  // nil = platform product
-	Images      []string // ordered image URLs; first becomes the thumbnail
-	Attributes  []AttributeInput
-	CallerID    string // user ID of the requester (for seller ownership check)
-	CallerRole  string // "admin" | "seller"
+	Name          string
+	Description   string
+	SKU           string
+	Price         int64 // cents
+	Currency      string
+	CategoryID    string
+	Category      string
+	SubcategoryID *string
+	Stock         int
+	StoreID       *string  // nil = platform product
+	Images        []string // ordered image URLs; first becomes the thumbnail
+	Attributes    []AttributeInput
+	CallerID      string // user ID of the requester (for seller ownership check)
+	CallerRole    string // "admin" | "seller"
 }
 
 type CreateVariantRequest struct {
@@ -67,21 +84,46 @@ type UpdateVariantRequest struct {
 }
 
 type UpdateRequest struct {
-	Name        *string
-	Description *string
-	Price       *int64
-	Stock       *int
-	Category    *string
-	Images      *[]string        // nil = don't change; &[]string{} = clear; &[]string{"url"} = replace
-	Attributes  []AttributeInput // nil = don't change, empty = clear all
-	CallerID    string           // for seller ownership check
-	CallerRole  string
+	Name          *string
+	Description   *string
+	Price         *int64
+	Stock         *int
+	CategoryID    *string
+	Category      *string
+	SubcategoryID *string
+	Images        *[]string        // nil = don't change; &[]string{} = clear; &[]string{"url"} = replace
+	Attributes    []AttributeInput // nil = don't change, empty = clear all
+	CallerID      string           // for seller ownership check
+	CallerRole    string
 }
 
 type StockItem struct {
 	ProductID string
 	VariantID *string
 	Quantity  int
+}
+
+type FacetValue struct {
+	Value string
+	Count int
+}
+
+type AttributeFacet struct {
+	Name   string
+	Values []FacetValue
+}
+
+type CategoryFacet struct {
+	ID    string
+	Name  string
+	Count int
+}
+
+type ListResult struct {
+	Products   []*domain.Product
+	Total      int
+	Categories []CategoryFacet
+	Facets     []AttributeFacet
 }
 
 var ErrNotStoreOwner = errors.New("you can only add products to your own store")
@@ -104,9 +146,24 @@ func (s *ProductService) Create(ctx context.Context, req CreateRequest) (*domain
 		imageURL = req.Images[0]
 	}
 
-	p, err := domain.NewProduct(req.Name, req.Description, req.SKU, req.Price, req.Currency, req.Category, imageURL, req.Stock)
+	category, err := s.resolveCategory(ctx, req.CategoryID, req.Category)
 	if err != nil {
 		return nil, err
+	}
+	subcategory, err := s.resolveSubcategory(ctx, category.ID, req.SubcategoryID)
+	if err != nil {
+		return nil, err
+	}
+
+	p, err := domain.NewProduct(req.Name, req.Description, req.SKU, req.Price, req.Currency, category.Name, imageURL, req.Stock)
+	if err != nil {
+		return nil, err
+	}
+	p.CategoryID = category.ID
+	p.Category = category.Name
+	if subcategory != nil {
+		p.SubcategoryID = &subcategory.ID
+		p.Subcategory = subcategory.Name
 	}
 	p.StoreID = req.StoreID
 
@@ -126,15 +183,16 @@ func (s *ProductService) Create(ctx context.Context, req CreateRequest) (*domain
 		}
 	}
 
-	if len(req.Attributes) > 0 {
-		attrs := make([]*domain.Attribute, len(req.Attributes))
-		for i, a := range req.Attributes {
-			attr, err := domain.NewAttribute(p.ID, a.Name, a.Values, i)
-			if err != nil {
-				return nil, fmt.Errorf("attribute %q: %w", a.Name, err)
-			}
-			attrs[i] = attr
-		}
+	var subcatID, subcatName string
+	if subcategory != nil {
+		subcatID = subcategory.ID
+		subcatName = subcategory.Name
+	}
+	attrs, err := s.buildSubcategoryAttributes(ctx, p.ID, subcatID, subcatName, req.Attributes)
+	if err != nil {
+		return nil, err
+	}
+	if len(attrs) > 0 {
 		if err := s.attributes.SaveBatch(ctx, attrs); err != nil {
 			return nil, fmt.Errorf("save attributes: %w", err)
 		}
@@ -168,6 +226,9 @@ func (s *ProductService) GetByIDs(ctx context.Context, ids []string) ([]*domain.
 		return nil, err
 	}
 	for _, product := range products {
+		if attrs, err := s.attributes.ListByProduct(ctx, product.ID); err == nil {
+			product.Attributes = attrs
+		}
 		if variants, err := s.variants.ListByProduct(ctx, product.ID); err == nil {
 			product.Variants = variants
 		}
@@ -175,16 +236,26 @@ func (s *ProductService) GetByIDs(ctx context.Context, ids []string) ([]*domain.
 	return products, nil
 }
 
-func (s *ProductService) List(ctx context.Context, f port.ListFilter) ([]*domain.Product, int, error) {
-	if f.Limit <= 0 {
-		f.Limit = 20
+func (s *ProductService) List(ctx context.Context, f port.ListFilter) (*ListResult, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 20
 	}
-	if f.Limit > 100 {
-		f.Limit = 100
+	if limit > 100 {
+		limit = 100
 	}
-	products, total, err := s.repo.List(ctx, f)
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	products, _, err := s.repo.List(ctx, port.ListFilter{
+		Status:  f.Status,
+		StoreID: f.StoreID,
+		Search:  f.Search,
+	})
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	if len(products) > 0 {
@@ -206,7 +277,39 @@ func (s *ProductService) List(ctx context.Context, f port.ListFilter) ([]*domain
 			}
 		}
 	}
-	return products, total, nil
+
+	categoryIDFilter := strings.TrimSpace(f.CategoryID)
+	if categoryIDFilter == "" && strings.TrimSpace(f.Category) != "" {
+		if category, err := s.resolveCategory(ctx, "", f.Category); err == nil {
+			categoryIDFilter = category.ID
+		}
+	}
+
+	categories := s.buildCategoryFacets(products, f.AttributeValues)
+	facets := buildAttributeFacets(products, categoryIDFilter, f.SubcategoryID, f.AttributeValues)
+	filtered := filterCatalogProducts(products, categoryIDFilter, f.SubcategoryID, f.AttributeValues)
+	total := len(filtered)
+
+	if offset >= total {
+		return &ListResult{
+			Products:   []*domain.Product{},
+			Total:      total,
+			Categories: categories,
+			Facets:     facets,
+		}, nil
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	return &ListResult{
+		Products:   filtered[offset:end],
+		Total:      total,
+		Categories: categories,
+		Facets:     facets,
+	}, nil
 }
 
 func (s *ProductService) Update(ctx context.Context, id string, req UpdateRequest) (*domain.Product, error) {
@@ -248,8 +351,35 @@ func (s *ProductService) Update(ctx context.Context, id string, req UpdateReques
 			p.Status = domain.StatusActive
 		}
 	}
-	if req.Category != nil {
-		p.Category = *req.Category
+	categoryChanged := false
+	if req.CategoryID != nil || req.Category != nil {
+		categoryID := p.CategoryID
+		categoryName := p.Category
+		if req.CategoryID != nil {
+			categoryID = *req.CategoryID
+		}
+		if req.Category != nil {
+			categoryName = *req.Category
+		}
+		category, err := s.resolveCategory(ctx, categoryID, categoryName)
+		if err != nil {
+			return nil, err
+		}
+		categoryChanged = category.ID != p.CategoryID
+		p.CategoryID = category.ID
+		p.Category = category.Name
+	}
+	if req.SubcategoryID != nil || categoryChanged {
+		subcategory, err := s.resolveSubcategory(ctx, p.CategoryID, req.SubcategoryID)
+		if err != nil {
+			return nil, err
+		}
+		p.SubcategoryID = nil
+		p.Subcategory = ""
+		if subcategory != nil {
+			p.SubcategoryID = &subcategory.ID
+			p.Subcategory = subcategory.Name
+		}
 	}
 	if req.Images != nil {
 		if len(*req.Images) > 0 {
@@ -272,22 +402,17 @@ func (s *ProductService) Update(ctx context.Context, id string, req UpdateReques
 	}
 
 	if req.Attributes != nil {
-		attrs := make([]*domain.Attribute, len(req.Attributes))
-		for i, a := range req.Attributes {
-			attr, err := domain.NewAttribute(p.ID, a.Name, a.Values, i)
-			if err != nil {
-				return nil, fmt.Errorf("attribute %q: %w", a.Name, err)
-			}
-			attrs[i] = attr
+		var subcatID, subcatName string
+		if p.SubcategoryID != nil {
+			subcatID = *p.SubcategoryID
+			subcatName = p.Subcategory
 		}
-		if len(attrs) > 0 {
-			if err := s.attributes.SaveBatch(ctx, attrs); err != nil {
-				return nil, fmt.Errorf("save attributes: %w", err)
-			}
-		} else {
-			if err := s.attributes.DeleteByProduct(ctx, p.ID); err != nil {
-				return nil, fmt.Errorf("delete attributes: %w", err)
-			}
+		attrs, err := s.buildSubcategoryAttributes(ctx, p.ID, subcatID, subcatName, req.Attributes)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.attributes.SaveBatch(ctx, attrs); err != nil {
+			return nil, fmt.Errorf("save attributes: %w", err)
 		}
 		p.Attributes = attrs
 	}
@@ -545,6 +670,9 @@ func (s *ProductService) CreateVariant(ctx context.Context, productID string, re
 	if err := s.checkStoreOwnership(ctx, *p.StoreID, req.CallerID); err != nil {
 		return nil, err
 	}
+	if err := s.validateVariantSelection(ctx, p, req.AttributeValues, ""); err != nil {
+		return nil, err
+	}
 
 	v, err := domain.NewVariant(productID, req.SKU, req.Price, req.Stock, req.AttributeValues)
 	if err != nil {
@@ -597,6 +725,9 @@ func (s *ProductService) UpdateVariant(ctx context.Context, productID, variantID
 		}
 	}
 	if req.AttributeValues != nil {
+		if err := s.validateVariantSelection(ctx, p, req.AttributeValues, v.ID); err != nil {
+			return nil, err
+		}
 		v.AttributeValues = req.AttributeValues
 	}
 	v.UpdatedAt = v.UpdatedAt // trigger update timestamp via domain
@@ -638,3 +769,438 @@ func (s *ProductService) ListVariants(ctx context.Context, productID string) ([]
 }
 
 func timeNow() time.Time { return time.Now().UTC() }
+
+func (s *ProductService) buildSubcategoryAttributes(ctx context.Context, productID, subcategoryID, subcategoryName string, inputs []AttributeInput) ([]*domain.Attribute, error) {
+	// No subcategory → attributes not allowed
+	if subcategoryID == "" {
+		if len(inputs) > 0 {
+			return nil, errors.New("attributes require a subcategory to be selected")
+		}
+		return nil, nil
+	}
+
+	definitions, err := s.globalAttrs.List(ctx, port.GlobalAttributeFilter{SubcategoryID: subcategoryID})
+	if err != nil {
+		return nil, fmt.Errorf("load subcategory attributes: %w", err)
+	}
+
+	// Subcategory has no defined attributes — skip validation
+	if len(definitions) == 0 {
+		if len(inputs) > 0 {
+			return nil, fmt.Errorf("subcategory %q has no configured attributes", subcategoryName)
+		}
+		return nil, nil
+	}
+
+	byName := make(map[string]*domain.GlobalAttribute, len(definitions))
+	for _, definition := range definitions {
+		byName[strings.ToLower(definition.Name)] = definition
+	}
+
+	inputByName := make(map[string]AttributeInput, len(inputs))
+	for _, input := range inputs {
+		nameKey := strings.ToLower(strings.TrimSpace(input.Name))
+		if nameKey == "" {
+			return nil, errors.New("attribute name is required")
+		}
+		if _, ok := byName[nameKey]; !ok {
+			return nil, fmt.Errorf("attribute %q is not configured for subcategory %q", input.Name, subcategoryName)
+		}
+		cleanValues := uniqueNonEmptyStrings(input.Values)
+		if len(cleanValues) == 0 {
+			return nil, fmt.Errorf("attribute %q must have at least one value", input.Name)
+		}
+		input.Name = strings.TrimSpace(input.Name)
+		input.Values = cleanValues
+		inputByName[nameKey] = input
+	}
+
+	attrs := make([]*domain.Attribute, 0, len(definitions))
+	for index, definition := range definitions {
+		input, ok := inputByName[strings.ToLower(definition.Name)]
+		if !ok {
+			return nil, fmt.Errorf("attribute %q is required for subcategory %q", definition.Name, subcategoryName)
+		}
+		attr, err := domain.NewAttribute(productID, &definition.ID, definition.Name, input.Values, index)
+		if err != nil {
+			return nil, fmt.Errorf("attribute %q: %w", definition.Name, err)
+		}
+		attrs = append(attrs, attr)
+	}
+
+	return attrs, nil
+}
+
+func (s *ProductService) validateVariantSelection(ctx context.Context, product *domain.Product, values map[string]string, currentVariantID string) error {
+	attrs, err := s.attributes.ListByProduct(ctx, product.ID)
+	if err != nil {
+		return fmt.Errorf("load product attributes: %w", err)
+	}
+	if len(attrs) == 0 {
+		if len(values) > 0 {
+			return errors.New("attribute values are not allowed for a product without attributes")
+		}
+		return nil
+	}
+	if len(values) != len(attrs) {
+		return errors.New("every product attribute must be selected for a variant")
+	}
+
+	allowed := make(map[string]map[string]struct{}, len(attrs))
+	for _, attr := range attrs {
+		valueSet := make(map[string]struct{}, len(attr.Values))
+		for _, value := range attr.Values {
+			valueSet[value] = struct{}{}
+		}
+		allowed[attr.Name] = valueSet
+	}
+
+	for name, value := range values {
+		attrAllowed, ok := allowed[name]
+		if !ok {
+			return fmt.Errorf("attribute %q is not valid for this product", name)
+		}
+		if _, ok := attrAllowed[value]; !ok {
+			return fmt.Errorf("value %q is not valid for attribute %q", value, name)
+		}
+	}
+
+	existingVariants, err := s.variants.ListByProduct(ctx, product.ID)
+	if err != nil {
+		return fmt.Errorf("load product variants: %w", err)
+	}
+	for _, variant := range existingVariants {
+		if currentVariantID != "" && variant.ID == currentVariantID {
+			continue
+		}
+		if sameAttributeCombination(variant.AttributeValues, values) {
+			return errors.New("that exact variant combination already exists")
+		}
+	}
+
+	return nil
+}
+
+func sameAttributeCombination(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		if right[key] != leftValue {
+			return false
+		}
+	}
+	return true
+}
+
+func filterCatalogProducts(products []*domain.Product, categoryID, subcategoryID string, filters map[string][]string) []*domain.Product {
+	filtered := make([]*domain.Product, 0, len(products))
+	for _, product := range products {
+		if categoryID != "" && product.CategoryID != categoryID {
+			continue
+		}
+		if subcategoryID != "" {
+			if product.SubcategoryID == nil || *product.SubcategoryID != subcategoryID {
+				continue
+			}
+		}
+		if categoryID == "" && product.CategoryID == "" && strings.TrimSpace(product.Category) == "" {
+			continue
+		}
+		if !productMatchesAttributeFilters(product, filters) {
+			continue
+		}
+		filtered = append(filtered, product)
+	}
+	return filtered
+}
+
+func (s *ProductService) buildCategoryFacets(products []*domain.Product, filters map[string][]string) []CategoryFacet {
+	type categoryCount struct {
+		Name  string
+		Count int
+	}
+	counts := make(map[string]categoryCount)
+	for _, product := range products {
+		if !productMatchesAttributeFilters(product, filters) {
+			continue
+		}
+		if strings.TrimSpace(product.CategoryID) == "" || strings.TrimSpace(product.Category) == "" {
+			continue
+		}
+		entry := counts[product.CategoryID]
+		entry.Name = product.Category
+		entry.Count++
+		counts[product.CategoryID] = entry
+	}
+
+	categories := make([]CategoryFacet, 0, len(counts))
+	for id, entry := range counts {
+		categories = append(categories, CategoryFacet{ID: id, Name: entry.Name, Count: entry.Count})
+	}
+	sort.Slice(categories, func(i, j int) bool {
+		return categories[i].Name < categories[j].Name
+	})
+	return categories
+}
+
+func buildAttributeFacets(products []*domain.Product, categoryID, subcategoryID string, filters map[string][]string) []AttributeFacet {
+	nameSet := make(map[string]struct{})
+	for _, product := range products {
+		if categoryID != "" && product.CategoryID != categoryID {
+			continue
+		}
+		if subcategoryID != "" && (product.SubcategoryID == nil || *product.SubcategoryID != subcategoryID) {
+			continue
+		}
+		for _, attribute := range product.Attributes {
+			nameSet[attribute.Name] = struct{}{}
+		}
+	}
+
+	names := make([]string, 0, len(nameSet))
+	for name := range nameSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	facets := make([]AttributeFacet, 0, len(names))
+	for _, name := range names {
+		counts := make(map[string]int)
+		filtersWithoutCurrent := make(map[string][]string, len(filters))
+		for key, values := range filters {
+			if key == name {
+				continue
+			}
+			filtersWithoutCurrent[key] = values
+		}
+
+		for _, product := range products {
+			if categoryID != "" && product.CategoryID != categoryID {
+				continue
+			}
+			if subcategoryID != "" && (product.SubcategoryID == nil || *product.SubcategoryID != subcategoryID) {
+				continue
+			}
+			if !productMatchesAttributeFilters(product, filtersWithoutCurrent) {
+				continue
+			}
+			for _, value := range getFilterValuesForProduct(product, name) {
+				counts[value]++
+			}
+		}
+
+		values := make([]FacetValue, 0, len(counts))
+		for value, count := range counts {
+			values = append(values, FacetValue{Value: value, Count: count})
+		}
+		sort.Slice(values, func(i, j int) bool {
+			return values[i].Value < values[j].Value
+		})
+		if len(values) == 0 {
+			continue
+		}
+		facets = append(facets, AttributeFacet{Name: name, Values: values})
+	}
+
+	return facets
+}
+
+func productMatchesAttributeFilters(product *domain.Product, filters map[string][]string) bool {
+	activeFilters := make(map[string][]string, len(filters))
+	for name, values := range filters {
+		if len(values) > 0 {
+			activeFilters[name] = values
+		}
+	}
+	if len(activeFilters) == 0 {
+		return true
+	}
+
+	activeVariants := getPurchasableVariants(product)
+	if len(activeVariants) > 0 {
+		for _, variant := range activeVariants {
+			matches := true
+			for attributeName, values := range activeFilters {
+				if !containsString(values, variant.AttributeValues[attributeName]) {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return true
+			}
+		}
+		return false
+	}
+
+	attributesByName := make(map[string]map[string]struct{}, len(product.Attributes))
+	for _, attribute := range product.Attributes {
+		valueSet := make(map[string]struct{}, len(attribute.Values))
+		for _, value := range attribute.Values {
+			valueSet[value] = struct{}{}
+		}
+		attributesByName[attribute.Name] = valueSet
+	}
+
+	for attributeName, values := range activeFilters {
+		available := attributesByName[attributeName]
+		matched := false
+		for _, value := range values {
+			if _, ok := available[value]; ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	return true
+}
+
+func getFilterValuesForProduct(product *domain.Product, attributeName string) []string {
+	activeVariants := getPurchasableVariants(product)
+	if len(activeVariants) > 0 {
+		seen := make(map[string]struct{})
+		values := make([]string, 0, len(activeVariants))
+		for _, variant := range activeVariants {
+			value := variant.AttributeValues[attributeName]
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			values = append(values, value)
+		}
+		return values
+	}
+
+	for _, attribute := range product.Attributes {
+		if attribute.Name == attributeName {
+			return attribute.Values
+		}
+	}
+	return nil
+}
+
+func getPurchasableVariants(product *domain.Product) []*domain.Variant {
+	variants := make([]*domain.Variant, 0, len(product.Variants))
+	for _, variant := range product.Variants {
+		if variant.Status != domain.StatusActive || variant.Stock <= 0 {
+			continue
+		}
+		if !variantMatchesProductAttributes(product.Attributes, variant) {
+			continue
+		}
+		variants = append(variants, variant)
+	}
+	return variants
+}
+
+func variantMatchesProductAttributes(attributes []*domain.Attribute, variant *domain.Variant) bool {
+	if len(attributes) == 0 {
+		return len(variant.AttributeValues) == 0
+	}
+	if len(variant.AttributeValues) != len(attributes) {
+		return false
+	}
+	for _, attribute := range attributes {
+		value, ok := variant.AttributeValues[attribute.Name]
+		if !ok {
+			return false
+		}
+		if !containsString(attribute.Values, value) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ProductService) resolveCategory(ctx context.Context, categoryID, categoryName string) (*domain.Category, error) {
+	if s.categories == nil {
+		return nil, errors.New("category repository is not configured")
+	}
+
+	categoryID = strings.TrimSpace(categoryID)
+	categoryName = strings.TrimSpace(categoryName)
+
+	if categoryID != "" {
+		category, err := s.categories.GetCategoryByID(ctx, categoryID)
+		if err != nil {
+			if errors.Is(err, domain.ErrCategoryNotFound) {
+				return nil, errors.New("category not found")
+			}
+			return nil, fmt.Errorf("load category: %w", err)
+		}
+		return category, nil
+	}
+
+	if categoryName == "" {
+		return nil, errors.New("category_id is required")
+	}
+
+	categories, err := s.categories.ListCategories(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list categories: %w", err)
+	}
+	for _, category := range categories {
+		if strings.EqualFold(category.Name, categoryName) {
+			return category, nil
+		}
+	}
+	return nil, errors.New("category not found")
+}
+
+func (s *ProductService) resolveSubcategory(ctx context.Context, categoryID string, subcategoryID *string) (*domain.Subcategory, error) {
+	if subcategoryID == nil {
+		return nil, nil
+	}
+
+	trimmedID := strings.TrimSpace(*subcategoryID)
+	if trimmedID == "" {
+		return nil, nil
+	}
+
+	subcategory, err := s.categories.GetSubcategoryByID(ctx, trimmedID)
+	if err != nil {
+		if errors.Is(err, domain.ErrSubcategoryNotFound) {
+			return nil, errors.New("subcategory not found")
+		}
+		return nil, fmt.Errorf("load subcategory: %w", err)
+	}
+	if subcategory.CategoryID != categoryID {
+		return nil, errors.New("subcategory does not belong to the selected category")
+	}
+	return subcategory, nil
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
